@@ -64,9 +64,22 @@
             onSnapshot(q, (snap) => {
                 allProjects = [];
                 snap.forEach(d => allProjects.push({ id: d.id, ...d.data() }));
-                renderArchiv();
+                renderArchiv(document.getElementById('archiv-search')?.value || "");
                 if(!document.getElementById('calendar-tab').classList.contains('hidden')) renderWorkWeek();
             }, (err) => console.error("Snapshot error:", err));
+        }
+
+        // NEU: Funktion zum Löschen eines Projekts
+        async function deleteProject(id, event) {
+            if (event) event.stopPropagation(); // Verhindert, dass das Projekt-Laden ausgelöst wird
+            if (!confirm(`Möchten Sie das Projekt "${id}" wirklich unwiderruflich löschen?`)) return;
+
+            try {
+                await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'projekte', id));
+                showStatus(`PROJEKT ${id} GELÖSCHT`, "info");
+            } catch (e) {
+                showStatus("FEHLER BEIM LÖSCHEN", "error");
+            }
         }
 
         function getFormData() {
@@ -92,20 +105,18 @@
             };
         }
 
-        // NEU / FIXED: Kollisionsprüfung – nur ein Auftrag pro Stunde und Tag erlaubt
         async function saveToCloud() {
             if(!currentUser) return;
             const data = getFormData();
             if(!data.projekt_id) { showStatus("PROJEKT-ID FEHLT!", "error"); return; }
             if(!data.datum) { showStatus("DATUM FEHLT!", "error"); return; }
 
-            // Zeit-Check Logik
             const selectedDate = new Date(data.datum);
             const selectedHour = selectedDate.getHours();
             const dateStr = selectedDate.toISOString().split('T')[0];
 
             const conflict = allProjects.find(p => {
-                if (!p.datum || p.id === data.projekt_id) return false; // Eigenes Projekt ignorieren (Update erlaubt)
+                if (!p.datum || p.id === data.projekt_id) return false;
                 const pDate = new Date(p.datum);
                 const pDateStr = pDate.toISOString().split('T')[0];
                 const pHour = pDate.getHours();
@@ -165,7 +176,7 @@
                        (p.pl_intern || "").toLowerCase().includes(lowerFilter);
             });
             if(filtered.length === 0) {
-                list.innerHTML = '<tr><td colspan="3" class="p-8 text-center text-slate-500 text-[10px] font-bold uppercase tracking-widest">Keine Projekte gefunden</td></tr>';
+                list.innerHTML = '<tr><td colspan="4" class="p-8 text-center text-slate-500 text-[10px] font-bold uppercase tracking-widest">Keine Projekte gefunden</td></tr>';
                 return;
             }
             filtered.forEach(p => {
@@ -179,7 +190,10 @@
                     </td>
                     <td class="p-4 text-[10px] font-semibold text-slate-400 uppercase italic">${p.verantwortlicher || '-'}</td>
                     <td class="p-4 text-right">
-                        <button class="bg-slate-800 group-hover:bg-blue-600 text-white px-4 py-2 rounded-lg text-[9px] font-bold uppercase transition-all">ÖFFNEN</button>
+                        <div class="flex gap-2 justify-end">
+                            <button class="bg-slate-800 group-hover:bg-blue-600 text-white px-4 py-2 rounded-lg text-[9px] font-bold uppercase transition-all">ÖFFNEN</button>
+                            <button onclick="deleteProject('${p.id}', event)" class="bg-red-950 text-red-500 hover:bg-red-600 hover:text-white px-3 py-2 rounded-lg text-[9px] font-bold uppercase transition-all">LÖSCHEN</button>
+                        </div>
                     </td>
                 `;
                 list.appendChild(tr);
@@ -337,6 +351,7 @@
         window.closeArchiv = () => { document.getElementById('archiv-modal').classList.add('hidden'); document.getElementById('archiv-search').value = ""; };
         window.resetForm = resetForm;
         window.handleSearch = (el) => renderArchiv(el.value);
+        window.deleteProject = deleteProject;
 
     </script>
     <style>
@@ -355,7 +370,7 @@
     <div id="status-msg" class="fixed opacity-0 pointer-events-none transition-all duration-500 translate-y-5"></div>
 
     <div id="archiv-modal" class="fixed inset-0 bg-black/80 backdrop-blur-lg z-[200] hidden flex items-center justify-center p-4">
-        <div class="bg-slate-900 w-full max-w-2xl rounded-[2.5rem] shadow-2xl border border-slate-700 overflow-hidden">
+        <div class="bg-slate-900 w-full max-w-3xl rounded-[2.5rem] shadow-2xl border border-slate-700 overflow-hidden">
             <div class="p-8 bg-slate-950 text-white flex justify-between items-center border-b border-slate-800">
                 <h3 class="font-black text-blue-400 uppercase text-xl italic">CLOUD ARCHIV</h3>
                 <button onclick="closeArchiv()" class="bg-slate-800 w-10 h-10 rounded-full flex items-center justify-center text-2xl hover:bg-red-600 transition-colors">&times;</button>
@@ -365,7 +380,7 @@
                     <input type="text" id="archiv-search" oninput="handleSearch(this)" placeholder="Nach ID, Adresse oder PL suchen..." class="w-full bg-slate-800 border-2 border-slate-700 rounded-xl py-4 px-6 text-sm font-bold text-white outline-none focus:border-blue-500 transition-all">
                 </div>
             </div>
-            <div class="max-h-[50vh] overflow-y-auto custom-scrollbar p-4 bg-slate-900">
+            <div class="max-h-[60vh] overflow-y-auto custom-scrollbar p-4 bg-slate-900">
                 <table class="w-full text-left">
                     <tbody id="archiv-liste"></tbody>
                 </table>
@@ -382,7 +397,7 @@
                 </div>
                 <div>
                     <h1 class="text-lg font-black italic uppercase text-white tracking-tighter">GIS <span class="text-blue-500">CLOUD</span></h1>
-                    <span class="text-[8px] font-bold text-slate-500 uppercase tracking-widest">Ver. 2.8 - Kollisionsschutz</span>
+                    <span class="text-[8px] font-bold text-slate-500 uppercase tracking-widest">Ver. 2.9 - Mit Löschfunktion</span>
                 </div>
             </div>
             
