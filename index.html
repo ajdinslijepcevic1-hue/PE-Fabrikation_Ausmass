@@ -30,7 +30,7 @@
         let currentWeekStart = new Date(); 
         let currentFiles = []; 
 
-        const CHUNK_SIZE = 500000; 
+        const CHUNK_SIZE = 850000; 
 
         async function initAuth() {
             try {
@@ -150,6 +150,14 @@
             if(!data.projekt_id) { showStatus("PROJEKT-ID FEHLT!", "error"); return; }
             if(!data.datum) { showStatus("DATUM FEHLT!", "error"); return; }
 
+            // NEW: Dubletten-Check für Datum und Uhrzeit
+            const existingDuplicate = allProjects.find(p => p.datum === data.datum && p.id !== data.projekt_id);
+            if (existingDuplicate) {
+                showStatus(`ZEITKONFLIKT: ${existingDuplicate.id} IST BEREITS GEPLANT!`, "error");
+                const confirmSave = confirm(`Achtung: Um ${new Date(data.datum).toLocaleString('de-DE')} ist bereits der Auftrag "${existingDuplicate.id}" geplant. Möchtest du trotzdem speichern?`);
+                if (!confirmSave) return;
+            }
+
             showStatus("SPEICHERE DATEN...", "info");
 
             try {
@@ -160,7 +168,10 @@
                     size: f.size,
                     type: f.type
                 }));
+
                 await setDoc(projectRef, { ...data, files: fileMetadata }, { merge: true });
+
+                const uploadPromises = [];
                 for (let file of currentFiles) {
                     if (file.isNew && file.data) {
                         const str = file.data;
@@ -169,20 +180,24 @@
                         for (let i = 0; i < totalLength; i += CHUNK_SIZE) {
                             const chunkContent = str.substring(i, i + CHUNK_SIZE);
                             const chunkRef = doc(db, 'artifacts', appId, 'public', 'data', 'projekte', data.projekt_id, 'fileData', file.id, 'chunks', `part_${partIndex}`);
-                            await setDoc(chunkRef, { 
+                            uploadPromises.push(setDoc(chunkRef, { 
                                 part: partIndex, 
                                 content: chunkContent 
-                            });
+                            }));
                             partIndex++;
                         }
                         file.isNew = false; 
                     }
                 }
+                
+                await Promise.all(uploadPromises);
+                
                 showStatus("ERFOLGREICH GESPEICHERT");
                 renderFileList();
+                renderWorkWeek();
             } catch(e) { 
                 console.error("Speicher-Fehler Details:", e);
-                showStatus("SPEICHERFEHLER", "error"); 
+                showStatus("SPEICHERFEHLER!", "error"); 
             }
         }
 
@@ -209,6 +224,8 @@
                     setVal('verantwortlicher', d.verantwortlicher);
                     setVal('interne_infos', d.interne_infos);
                     setVal('baustellen_protokoll', d.baustellen_protokoll);
+                    setVal('mr_status_input', d.mr_status); // Added reference to standard input if exists
+                    
                     document.querySelectorAll('input[name="art"]').forEach(rb => rb.checked = (rb.value === d.auftragsart));
                     document.querySelectorAll('input[name="mr"]').forEach(rb => rb.checked = (rb.value === d.mr_status));
                     document.querySelectorAll('.etage-cb').forEach(cb => { 
@@ -304,7 +321,10 @@
             filtered.forEach(p => {
                 const tr = document.createElement('tr');
                 tr.className = "border-b border-slate-700 hover:bg-slate-700/50 cursor-pointer group";
-                tr.onclick = () => loadProjectData(p.id);
+                tr.onclick = (e) => {
+                    if (e.target.closest('button')) return;
+                    loadProjectData(p.id);
+                };
                 tr.innerHTML = `
                     <td class="p-4">
                         <div class="text-[11px] font-bold text-white uppercase">${p.id}</div>
@@ -320,12 +340,21 @@
         }
 
         async function deleteProject(id, event) {
-            if (event) event.stopPropagation(); 
+            if (event) {
+                event.preventDefault();
+                event.stopPropagation(); 
+            }
             if (!confirm(`Projekt "${id}" wirklich löschen?`)) return;
+            
+            showStatus("LÖSCHE PROJEKT...", "info");
             try {
-                await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'projekte', id));
-                showStatus(`PROJEKT GELÖSCHT`, "info");
-            } catch (e) { showStatus("FEHLER", "error"); }
+                const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'projekte', id);
+                await deleteDoc(docRef);
+                showStatus(`PROJEKT GELÖSCHT`, "success");
+            } catch (e) { 
+                console.error("Delete Error:", e);
+                showStatus("FEHLER BEIM LÖSCHEN", "error"); 
+            }
         }
 
         function renderWorkWeek() {
@@ -337,7 +366,6 @@
             const friday = new Date(monday);
             friday.setDate(monday.getDate() + 4);
             weekLabel.innerText = `KW ${getWeekNumber(monday)} | ${monday.toLocaleDateString('de-DE', {day:'2-digit', month:'2-digit'})} - ${friday.toLocaleDateString('de-DE', {day:'2-digit', month:'2-digit', year:'numeric'})}`;
-            
             const timeCol = document.createElement('div');
             timeCol.className = "col-span-1 border-r border-slate-700/50 mt-12 bg-slate-800/50";
             for(let h=7; h<=19; h++) {
@@ -347,12 +375,10 @@
                 timeCol.appendChild(hour);
             }
             container.appendChild(timeCol);
-
             for(let i=0; i<5; i++) {
                 const dayDate = new Date(monday);
                 dayDate.setDate(monday.getDate() + i);
                 
-                // Formatiere das Datum des Kalendertages als YYYY-MM-DD für den Vergleich
                 const year = dayDate.getFullYear();
                 const month = String(dayDate.getMonth() + 1).padStart(2, '0');
                 const day = String(dayDate.getDate()).padStart(2, '0');
@@ -361,21 +387,18 @@
                 const dayCol = document.createElement('div');
                 dayCol.className = "col-span-2 relative min-h-[1040px] border-r border-slate-700/50 bg-slate-900/40";
                 const isToday = new Date().toDateString() === dayDate.toDateString();
-                
                 dayCol.innerHTML = `
                     <div class="h-12 text-center flex flex-col justify-center border-b border-slate-700 sticky top-0 z-30 ${isToday ? 'bg-blue-900/90' : 'bg-slate-800/90'} backdrop-blur-md">
                         <span class="text-[9px] font-black uppercase ${isToday ? 'text-blue-400' : 'text-slate-500'}">${dayDate.toLocaleDateString('de-DE', {weekday: 'short'})}</span>
                         <span class="text-sm font-black text-white">${dayDate.getDate()}.${dayDate.getMonth()+1}.</span>
                     </div>
                 `;
-
                 for(let h=7; h<=19; h++) {
                     const slot = document.createElement('div');
                     slot.className = "h-[80px] border-t border-slate-700/30 w-full";
                     dayCol.appendChild(slot);
                 }
                 
-                // Filtere Projekte basierend auf dem Datumsstring des Inputs (YYYY-MM-DD)
                 allProjects.filter(p => {
                     if(!p.datum) return false;
                     const projectDay = p.datum.split('T')[0]; 
@@ -383,9 +406,7 @@
                 }).forEach(p => {
                     const timeParts = p.datum.split('T');
                     if (timeParts.length < 2) return;
-                    
-                    const timeStr = timeParts[1];
-                    const [hours, minutes] = timeStr.split(':');
+                    const [hours, minutes] = timeParts[1].split(':');
                     const hNum = parseInt(hours);
                     
                     if(hNum >= 7 && hNum < 20) {
@@ -541,11 +562,18 @@
                         <div class="flex flex-col gap-2"><label class="text-[9px] font-black text-slate-500 uppercase">Kunde</label><input type="text" id="kunde" class="input-dark"></div>
                         <div class="flex flex-col gap-2"><label class="text-[9px] font-black text-slate-500 uppercase">PL Extern</label><input type="text" id="pl_extern" class="input-dark"></div>
                     </div>
-                </div>
-
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-8 mb-12 border-t border-slate-800 pt-12">
-                    <div class="flex flex-col gap-2"><label class="text-[9px] font-black text-slate-500 uppercase">Tel. Bauleitung</label><input type="text" id="tel_bauleitung" class="input-dark"></div>
-                    <div class="flex flex-col gap-2"><label class="text-[9px] font-black text-slate-500 uppercase">Tel. Monteur</label><input type="text" id="tel_monteur" class="input-dark"></div>
+                    <!-- Added Tel. Monteur Field alongside Bauleitung -->
+                    <div class="grid grid-cols-2 gap-6">
+                        <div class="flex flex-col gap-2"><label class="text-[9px] font-black text-slate-500 uppercase">Tel. Bauleitung</label><input type="text" id="tel_bauleitung" class="input-dark"></div>
+                        <div class="flex flex-col gap-2"><label class="text-[9px] font-black text-slate-500 uppercase">Tel. Monteur</label><input type="text" id="tel_monteur" class="input-dark"></div>
+                    </div>
+                    <div class="flex flex-col gap-2">
+                        <label class="text-[9px] font-black text-slate-500 uppercase">Meterriss Status</label>
+                        <div class="flex gap-4 mt-2">
+                            <label class="flex items-center gap-2 cursor-pointer text-white text-[10px] font-bold uppercase"><input type="radio" name="mr" value="Vorhanden" class="accent-blue-500"> Vorhanden</label>
+                            <label class="flex items-center gap-2 cursor-pointer text-white text-[10px] font-bold uppercase"><input type="radio" name="mr" value="Fehlt" class="accent-blue-500"> Fehlt</label>
+                        </div>
+                    </div>
                 </div>
 
                 <div class="grid grid-cols-1 lg:grid-cols-12 gap-12 border-t border-slate-800 pt-12">
@@ -562,21 +590,19 @@
                     </div>
 
                     <div class="lg:col-span-8">
-                        <h4 class="text-[10px] font-black uppercase text-blue-400 mb-6 tracking-widest">DETAILS</h4>
-                        <div class="mb-6 flex gap-10">
-                            <label class="flex items-center gap-3 cursor-pointer text-white"><input type="radio" name="mr" value="Meterriss vorhanden" class="w-4 h-4 accent-blue-500"><span class="text-[10px] font-black uppercase italic">Meterriss OK</span></label>
-                            <label class="flex items-center gap-3 cursor-pointer text-white"><input type="radio" name="mr" value="Kein Meterriss" class="w-4 h-4 accent-blue-500"><span class="text-[10px] font-black uppercase italic">Kein Meterriss</span></label>
-                        </div>
+                        <h4 class="text-[10px] font-black uppercase text-blue-400 mb-6 tracking-widest">DETAILS GESCHOSSE</h4>
                         <div class="grid grid-cols-4 sm:grid-cols-6 gap-2 mb-8">
+                            <!-- Updated Geschoss List: EG, 1.OG - 10.OG, DG -->
                             <script>
-                                ["EG", "1.OG", "2.OG", "3.OG", "4.OG", "DG"].forEach(e => {
+                                const levels = ["EG", "1.OG", "2.OG", "3.OG", "4.OG", "5.OG", "6.OG", "7.OG", "8.OG", "9.OG", "10.OG", "DG"];
+                                levels.forEach(e => {
                                     document.write(`<label class="etage-label"><input type="checkbox" value="${e}" class="hidden etage-cb" onchange="updateEtageStyle(this)">${e}</label>`);
                                 });
                             </script>
                         </div>
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                            <textarea id="interne_infos" rows="4" class="w-full bg-white border-2 border-slate-300 rounded-2xl p-4 text-xs font-bold text-black outline-none" placeholder="Interne Notizen..."></textarea>
-                            <textarea id="baustellen_protokoll" rows="4" class="w-full bg-white border-2 border-slate-300 rounded-2xl p-4 text-xs font-bold text-black outline-none" placeholder="Protokoll / Rückmeldung..."></textarea>
+                            <textarea id="interne_infos" rows="4" class="w-full bg-white border-2 border-slate-300 rounded-2xl p-4 text-xs font-bold text-black outline-none" placeholder="Notizen..."></textarea>
+                            <textarea id="baustellen_protokoll" rows="4" class="w-full bg-white border-2 border-slate-300 rounded-2xl p-4 text-xs font-bold text-black outline-none" placeholder="Rückmeldung..."></textarea>
                         </div>
                     </div>
                 </div>
