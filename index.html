@@ -11,7 +11,6 @@
         import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot, updateDoc, getDocs, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
 
-        // Firebase Konfiguration
         const firebaseConfig = {
             apiKey: "AIzaSyDZdCAoXdP0QfKJdnxBWzZ5vo4trhzsa74",
             authDomain: "ausmass-plaene.firebaseapp.com",
@@ -30,7 +29,6 @@
         let allProjects = []; 
         let currentWeekStart = new Date(); 
 
-        // Authentifizierung
         async function initAuth() {
             try {
                 await setPersistence(auth, browserLocalPersistence);
@@ -50,30 +48,27 @@
             } else { initAuth(); }
         });
 
-        // Status Meldungen
         function showStatus(msg, type = "success") {
             const status = document.getElementById('status-msg');
             if (!status) return;
             status.innerText = msg;
             const colors = { success: 'bg-blue-600', error: 'bg-red-600', info: 'bg-amber-500' };
-            status.className = `fixed bottom-8 left-1/2 -translate-x-1/2 px-6 py-3 rounded-full text-white font-semibold shadow-2xl z-[300] transition-all duration-500 uppercase text-[10px] tracking-widest ${colors[type] || colors.success}`;
+            status.className = `fixed bottom-8 left-1/2 -translate-x-1/2 px-6 py-3 rounded-full text-white text-center font-semibold shadow-2xl z-[300] transition-all duration-500 uppercase text-[10px] tracking-widest min-w-[300px] ${colors[type] || colors.success}`;
             status.style.opacity = "1";
             status.style.transform = "translateX(-1/2) translateY(0)";
-            setTimeout(() => { if(status) { status.style.opacity = "0"; status.style.transform = "translateX(-1/2) translateY(20px)"; } }, 3000);
+            setTimeout(() => { if(status) { status.style.opacity = "0"; status.style.transform = "translateX(-1/2) translateY(20px)"; } }, 4000);
         }
 
-        // Firestore Listener für Echtzeit-Updates
         function setupProjectsListener() {
             const q = collection(db, 'artifacts', appId, 'public', 'data', 'projekte');
             onSnapshot(q, (snap) => {
                 allProjects = [];
                 snap.forEach(d => allProjects.push({ id: d.id, ...d.data() }));
-                renderArchiv(); // Initiales Rendern des Archivs
+                renderArchiv();
                 if(!document.getElementById('calendar-tab').classList.contains('hidden')) renderWorkWeek();
             }, (err) => console.error("Snapshot error:", err));
         }
 
-        // Formulardaten sammeln
         function getFormData() {
             return {
                 auftragsart: document.querySelector('input[name="art"]:checked')?.value || '',
@@ -97,11 +92,33 @@
             };
         }
 
-        // Speichern
+        // NEU / FIXED: Kollisionsprüfung – nur ein Auftrag pro Stunde und Tag erlaubt
         async function saveToCloud() {
             if(!currentUser) return;
             const data = getFormData();
             if(!data.projekt_id) { showStatus("PROJEKT-ID FEHLT!", "error"); return; }
+            if(!data.datum) { showStatus("DATUM FEHLT!", "error"); return; }
+
+            // Zeit-Check Logik
+            const selectedDate = new Date(data.datum);
+            const selectedHour = selectedDate.getHours();
+            const dateStr = selectedDate.toISOString().split('T')[0];
+
+            const conflict = allProjects.find(p => {
+                if (!p.datum || p.id === data.projekt_id) return false; // Eigenes Projekt ignorieren (Update erlaubt)
+                const pDate = new Date(p.datum);
+                const pDateStr = pDate.toISOString().split('T')[0];
+                const pHour = pDate.getHours();
+                return pDateStr === dateStr && pHour === selectedHour;
+            });
+
+            if (conflict) {
+                const timeString = `${selectedHour.toString().padStart(2, '0')}:00 Uhr`;
+                const dateDisplay = selectedDate.toLocaleDateString('de-DE');
+                showStatus(`ZEITKONFLIKT: ${timeString} AM ${dateDisplay} IST BELEGT DURCH "${conflict.id}"`, "error");
+                return;
+            }
+
             try {
                 const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'projekte', data.projekt_id);
                 await setDoc(docRef, data, { merge: true });
@@ -109,17 +126,15 @@
             } catch(e) { showStatus("SPEICHERFEHLER", "error"); }
         }
 
-        // Kalender Helfer
         function getMonday(d) {
             const date = new Date(d);
-            const day = date.getDay(); 
-            const diff = date.getDate() - day + (day === 0 ? -6 : 1); 
+            const day = date.getDay();
+            const diff = date.getDate() - (day === 0 ? 6 : day - 1);
             const monday = new Date(date.setDate(diff));
             monday.setHours(0, 0, 0, 0);
             return monday;
         }
 
-        // Tab Management
         function switchTab(tabId) {
             document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
             const targetContent = document.getElementById(tabId);
@@ -139,26 +154,20 @@
             if(tabId === 'calendar-tab') renderWorkWeek();
         }
 
-        // Archiv rendern & Suche fixen
         function renderArchiv(filterText = "") {
             const list = document.getElementById('archiv-liste');
             if(!list) return;
             list.innerHTML = '';
-            
             const lowerFilter = filterText.toLowerCase().trim();
-            
             const filtered = allProjects.filter(p => {
-                const idMatch = p.id.toLowerCase().includes(lowerFilter);
-                const addressMatch = (p.adresse || "").toLowerCase().includes(lowerFilter);
-                const plMatch = (p.pl_intern || "").toLowerCase().includes(lowerFilter);
-                return idMatch || addressMatch || plMatch;
+                return p.id.toLowerCase().includes(lowerFilter) || 
+                       (p.adresse || "").toLowerCase().includes(lowerFilter) || 
+                       (p.pl_intern || "").toLowerCase().includes(lowerFilter);
             });
-
             if(filtered.length === 0) {
                 list.innerHTML = '<tr><td colspan="3" class="p-8 text-center text-slate-500 text-[10px] font-bold uppercase tracking-widest">Keine Projekte gefunden</td></tr>';
                 return;
             }
-
             filtered.forEach(p => {
                 const tr = document.createElement('tr');
                 tr.className = "border-b border-slate-700 hover:bg-slate-700/50 cursor-pointer transition-all group";
@@ -168,9 +177,7 @@
                         <div class="text-[11px] font-bold text-white uppercase tracking-tight group-hover:text-blue-400 transition-colors">${p.id}</div>
                         <div class="text-[9px] text-slate-400 truncate max-w-[200px]">${p.adresse || 'Keine Adresse'}</div>
                     </td>
-                    <td class="p-4 text-[10px] font-semibold text-slate-400 uppercase italic">
-                        ${p.verantwortlicher || '-'}
-                    </td>
+                    <td class="p-4 text-[10px] font-semibold text-slate-400 uppercase italic">${p.verantwortlicher || '-'}</td>
                     <td class="p-4 text-right">
                         <button class="bg-slate-800 group-hover:bg-blue-600 text-white px-4 py-2 rounded-lg text-[9px] font-bold uppercase transition-all">ÖFFNEN</button>
                     </td>
@@ -179,19 +186,16 @@
             });
         }
 
-        // Projekt laden
         async function loadProjectData(id) {
             try {
                 const snap = await getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'projekte', id));
                 if(snap.exists()) {
                     const d = snap.data();
                     switchTab('form-tab');
-                    
                     const setVal = (id, val) => {
                         const el = document.getElementById(id);
                         if(el) el.value = val || '';
                     };
-
                     setVal('projekt_id', id);
                     setVal('adresse', d.adresse);
                     setVal('datum', d.datum);
@@ -204,29 +208,21 @@
                     setVal('verantwortlicher', d.verantwortlicher);
                     setVal('interne_infos', d.interne_infos);
                     setVal('baustellen_protokoll', d.baustellen_protokoll);
-                    
                     document.querySelectorAll('input[name="art"]').forEach(rb => rb.checked = (rb.value === d.auftragsart));
                     document.querySelectorAll('input[name="mr"]').forEach(rb => rb.checked = (rb.value === d.mr_status));
                     document.querySelectorAll('.etage-cb').forEach(cb => { 
                         cb.checked = (d.etagen || []).includes(cb.value); 
                         updateEtageStyle(cb); 
                     });
-                    
-                    const anvisiert = document.getElementById('kunde_anvisiert');
-                    if(anvisiert) anvisiert.checked = d.kunde_anvisiert || false;
-                    const informiert = document.getElementById('polier_informiert');
-                    if(informiert) informiert.checked = d.polier_informiert || false;
-                    
+                    if(document.getElementById('kunde_anvisiert')) document.getElementById('kunde_anvisiert').checked = d.kunde_anvisiert || false;
+                    if(document.getElementById('polier_informiert')) document.getElementById('polier_informiert').checked = d.polier_informiert || false;
                     closeArchiv();
                     showStatus("DATEN GELADEN", "info");
                     window.scrollTo({ top: 0, behavior: 'smooth' });
                 }
-            } catch (e) {
-                showStatus("FEHLER BEIM LADEN", "error");
-            }
+            } catch (e) { showStatus("FEHLER BEIM LADEN", "error"); }
         }
 
-        // Kalender rendern
         function renderWorkWeek() {
             const container = document.getElementById('work-week-grid');
             const weekLabel = document.getElementById('week-label');
@@ -236,7 +232,8 @@
             const monday = getMonday(new Date(currentWeekStart));
             const friday = new Date(monday);
             friday.setDate(monday.getDate() + 4);
-            weekLabel.innerText = `${monday.toLocaleDateString('de-DE', {day:'2-digit', month:'short'})} - ${friday.toLocaleDateString('de-DE', {day:'2-digit', month:'short', year:'numeric'})}`;
+            
+            weekLabel.innerText = `KW ${getWeekNumber(monday)} | ${monday.toLocaleDateString('de-DE', {day:'2-digit', month:'2-digit'})} - ${friday.toLocaleDateString('de-DE', {day:'2-digit', month:'2-digit', year:'numeric'})}`;
 
             const timeCol = document.createElement('div');
             timeCol.className = "col-span-1 border-r border-slate-700/50 mt-12 bg-slate-800/50";
@@ -251,17 +248,20 @@
             for(let i=0; i<5; i++) {
                 const dayDate = new Date(monday);
                 dayDate.setDate(monday.getDate() + i);
-                const dayStr = dayDate.toISOString().split('T')[0];
+                
+                const dayStr = dayDate.getFullYear() + "-" + 
+                               String(dayDate.getMonth() + 1).padStart(2, '0') + "-" + 
+                               String(dayDate.getDate()).padStart(2, '0');
 
                 const dayCol = document.createElement('div');
                 dayCol.className = "col-span-2 relative min-h-[1040px] border-r border-slate-700/50 bg-slate-900/40";
                 const isToday = new Date().toDateString() === dayDate.toDateString();
                 
                 const header = document.createElement('div');
-                header.className = `h-12 text-center flex flex-col justify-center border-b border-slate-700 sticky top-0 z-30 ${isToday ? 'bg-blue-900/90' : 'bg-slate-800/90'} backdrop-blur-md`;
+                header.className = `h-12 text-center flex flex-col justify-center border-b border-slate-700 sticky top-0 z-30 ${isToday ? 'bg-blue-900/90 shadow-lg shadow-blue-500/10' : 'bg-slate-800/90'} backdrop-blur-md`;
                 header.innerHTML = `
                     <span class="text-[9px] font-black uppercase ${isToday ? 'text-blue-400' : 'text-slate-500'} tracking-wider">${dayDate.toLocaleDateString('de-DE', {weekday: 'short'})}</span>
-                    <span class="text-sm font-black text-white">${dayDate.getDate()}</span>
+                    <span class="text-sm font-black text-white">${dayDate.getDate()}.${dayDate.getMonth()+1}.</span>
                 `;
                 dayCol.appendChild(header);
 
@@ -273,19 +273,20 @@
 
                 allProjects.filter(p => p.datum && p.datum.startsWith(dayStr)).forEach(p => {
                     const time = new Date(p.datum);
-                    const hours = time.getHours() + (time.getMinutes() / 60);
+                    const hours = time.getHours();
                     if(hours >= 7 && hours < 20) {
                         const topPos = ((hours - 7) * 80) + 48; 
                         const entry = document.createElement('div');
-                        entry.className = "absolute left-1.5 right-1.5 bg-slate-800 border border-slate-600 text-white p-2.5 rounded-xl shadow-lg border-l-[4px] border-blue-500 z-20 cursor-pointer hover:bg-slate-700 transition-all overflow-hidden";
+                        entry.className = "absolute left-1 right-1 bg-slate-800 border border-blue-500/50 text-white p-2 rounded-lg shadow-xl border-l-[4px] border-l-blue-500 z-20 cursor-pointer hover:bg-slate-700 transition-all overflow-hidden flex flex-col justify-center";
                         entry.style.top = `${topPos}px`;
-                        entry.style.height = "72px"; 
+                        entry.style.height = "80px"; 
                         entry.innerHTML = `
-                            <div class="flex justify-between items-start gap-1">
-                                <span class="text-[10px] font-extrabold truncate text-blue-400 uppercase leading-tight">${p.id}</span>
-                                <span class="text-[8px] font-bold text-slate-400">${time.toLocaleTimeString('de-DE', {hour:'2-digit', minute:'2-digit'})}</span>
+                            <div class="flex justify-between items-start mb-1">
+                                <span class="text-[10px] font-black truncate text-blue-400 uppercase leading-tight">${p.id}</span>
+                                <span class="text-[8px] font-bold text-slate-400 bg-slate-900 px-1.5 py-0.5 rounded">${time.toLocaleTimeString('de-DE', {hour:'2-digit', minute:'2-digit'})}</span>
                             </div>
-                            <div class="text-[9px] text-slate-300 font-medium truncate mt-0.5">${p.adresse || 'Keine Adresse'}</div>
+                            <div class="text-[9px] text-slate-200 font-bold truncate">${p.adresse || 'Keine Adresse'}</div>
+                            <div class="text-[8px] text-slate-500 mt-1 uppercase font-bold italic truncate">${p.verantwortlicher || ''}</div>
                         `;
                         entry.onclick = () => { loadProjectData(p.id); };
                         dayCol.appendChild(entry);
@@ -293,6 +294,13 @@
                 });
                 container.appendChild(dayCol);
             }
+        }
+
+        function getWeekNumber(d) {
+            d = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+            d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay()||7));
+            const yearStart = new Date(Date.UTC(d.getUTCFullYear(),0,1));
+            return Math.ceil((((d - yearStart) / 86400000) + 1)/7);
         }
 
         function updateEtageStyle(cb) {
@@ -316,7 +324,6 @@
             showStatus("BEREIT FÜR NEUEN AUFTRAG", "info");
         }
 
-        // Globaler Scope für HTML Events
         window.saveToCloud = saveToCloud;
         window.switchTab = switchTab;
         window.changeWeek = (o) => { 
@@ -347,7 +354,6 @@
 
     <div id="status-msg" class="fixed opacity-0 pointer-events-none transition-all duration-500 translate-y-5"></div>
 
-    <!-- Archiv Modal -->
     <div id="archiv-modal" class="fixed inset-0 bg-black/80 backdrop-blur-lg z-[200] hidden flex items-center justify-center p-4">
         <div class="bg-slate-900 w-full max-w-2xl rounded-[2.5rem] shadow-2xl border border-slate-700 overflow-hidden">
             <div class="p-8 bg-slate-950 text-white flex justify-between items-center border-b border-slate-800">
@@ -357,9 +363,6 @@
             <div class="p-6 bg-slate-900">
                 <div class="relative">
                     <input type="text" id="archiv-search" oninput="handleSearch(this)" placeholder="Nach ID, Adresse oder PL suchen..." class="w-full bg-slate-800 border-2 border-slate-700 rounded-xl py-4 px-6 text-sm font-bold text-white outline-none focus:border-blue-500 transition-all">
-                    <div class="absolute right-4 top-1/2 -translate-y-1/2 text-slate-500">
-                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
-                    </div>
                 </div>
             </div>
             <div class="max-h-[50vh] overflow-y-auto custom-scrollbar p-4 bg-slate-900">
@@ -379,7 +382,7 @@
                 </div>
                 <div>
                     <h1 class="text-lg font-black italic uppercase text-white tracking-tighter">GIS <span class="text-blue-500">CLOUD</span></h1>
-                    <span class="text-[8px] font-bold text-slate-500 uppercase tracking-widest">NextGen System 2026</span>
+                    <span class="text-[8px] font-bold text-slate-500 uppercase tracking-widest">Ver. 2.8 - Kollisionsschutz</span>
                 </div>
             </div>
             
@@ -396,7 +399,6 @@
 
         <div id="form-tab" class="tab-content space-y-8">
             <div class="card p-8 md:p-12">
-                <!-- Projekt Typ -->
                 <div class="grid grid-cols-1 md:grid-cols-12 gap-10 mb-12 border-b border-slate-800 pb-12">
                     <div class="md:col-span-7">
                         <span class="text-[9px] font-black text-slate-500 uppercase tracking-widest mb-6 block italic">PROJEKT-TYP</span>
@@ -417,22 +419,20 @@
                     </div>
                 </div>
 
-                <!-- Projekt ID -->
                 <div class="mb-12">
                     <div class="bg-slate-950 p-8 rounded-[2rem] border-2 border-blue-500/20 shadow-inner">
-                        <label class="text-[9px] font-black text-blue-400 uppercase tracking-widest italic mb-3 block">PROJEKT ID (OBJEKT-KENNUNG)</label>
+                        <label class="text-[9px] font-black text-blue-400 uppercase tracking-widest italic mb-3 block">PROJEKT ID</label>
                         <input type="text" id="projekt_id" class="w-full bg-transparent outline-none font-black text-3xl uppercase italic text-white placeholder:text-slate-800" placeholder="Z.B. PROJEKT-BERN">
                     </div>
                 </div>
 
-                <!-- Stammdaten -->
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-8 mb-12">
                     <div class="flex flex-col gap-2">
                         <label class="text-[9px] font-black text-slate-500 uppercase tracking-widest">Einsatzort / Adresse</label>
                         <input type="text" id="adresse" class="input-dark" placeholder="Strasse, PLZ, Ort">
                     </div>
                     <div class="flex flex-col gap-2">
-                        <label class="text-[9px] font-black text-slate-500 uppercase tracking-widest">Datum & Uhrzeit</label>
+                        <label class="text-[9px] font-black text-slate-500 uppercase tracking-widest">Datum & Uhrzeit (Start)</label>
                         <input type="datetime-local" id="datum" class="input-dark">
                     </div>
                     <div class="grid grid-cols-2 gap-6">
@@ -451,32 +451,23 @@
                             <input type="text" id="kunde" class="input-dark" placeholder="...">
                         </div>
                         <div class="flex flex-col gap-2">
-                            <label class="text-[9px] font-black text-slate-500 uppercase tracking-widest">Tel. PL Extern</label>
-                            <input type="text" id="tel_bauleitung" class="input-dark" placeholder="...">
-                        </div>
-                        <div class="flex flex-col gap-2">
                             <label class="text-[9px] font-black text-slate-500 uppercase tracking-widest">PL Extern</label>
                             <input type="text" id="pl_extern" class="input-dark" placeholder="...">
-                        </div>
-                        <div class="flex flex-col gap-2">
-                            <label class="text-[9px] font-black text-slate-500 uppercase tracking-widest">Tel. Monteur</label>
-                            <input type="text" id="tel_monteur" class="input-dark" placeholder="...">
                         </div>
                     </div>
                 </div>
 
-                <!-- Aufnahmebereiche -->
                 <div class="grid grid-cols-1 lg:grid-cols-2 gap-12 border-t border-slate-800 pt-12">
                     <section>
                         <h4 class="text-[10px] font-black uppercase text-blue-400 mb-6 tracking-widest">METERRISS STATUS</h4>
                         <div class="space-y-3">
                             <label class="flex items-center justify-between p-4 bg-slate-800 border-2 border-slate-700 rounded-xl cursor-pointer text-[10px] font-black uppercase text-white">PLAQUETTE <input type="radio" name="mr" value="MR Plaquette" class="w-5 h-5 accent-blue-500"></label>
                             <label class="flex items-center justify-between p-4 bg-slate-800 border-2 border-slate-700 rounded-xl cursor-pointer text-[10px] font-black uppercase text-white">BLEISTIFT <input type="radio" name="mr" value="MR Bleistift" class="w-5 h-5 accent-blue-500"></label>
-                            <label class="flex items-center justify-between p-4 bg-red-950/20 border-2 border-red-900/50 rounded-xl cursor-pointer text-[10px] font-black uppercase text-red-500">KEIN MR VORHANDEN <input type="radio" name="mr" value="Kein Meterriss" class="w-5 h-5 accent-red-500"></label>
+                            <label class="flex items-center justify-between p-4 bg-red-950/20 border-2 border-red-900/50 rounded-xl cursor-pointer text-[10px] font-black uppercase text-red-500">KEIN MR <input type="radio" name="mr" value="Kein Meterriss" class="w-5 h-5 accent-red-500"></label>
                         </div>
                     </section>
                     <section>
-                        <h4 class="text-[10px] font-black uppercase text-blue-400 mb-6 tracking-widest">AUFNAHMEBEREICHE</h4>
+                        <h4 class="text-[10px] font-black uppercase text-blue-400 mb-6 tracking-widest">ETAGEN</h4>
                         <div class="grid grid-cols-4 sm:grid-cols-6 gap-2 mb-6">
                             <script>
                                 const etagen = ["EG", "1.OG", "2.OG", "3.OG", "4.OG", "5.OG", "6.OG", "7.OG", "8.OG", "9.OG", "10.OG", "DG"];
@@ -485,42 +476,35 @@
                                 });
                             </script>
                         </div>
-                        <div class="space-y-3">
-                            <label class="flex items-center gap-3 text-[10px] font-black uppercase text-slate-400 cursor-pointer"><input type="checkbox" id="kunde_anvisiert" class="w-5 h-5 accent-blue-500 rounded"> Kunde anvisiert</label>
-                            <label class="flex items-center gap-3 text-[10px] font-black uppercase text-slate-400 cursor-pointer"><input type="checkbox" id="polier_informiert" class="w-5 h-5 accent-blue-500 rounded"> Polier informiert</label>
-                        </div>
                     </section>
                 </div>
 
-                <!-- Hinweise -->
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-8 mt-12 border-t border-slate-800 pt-12">
                     <div class="space-y-3">
-                        <span class="text-[9px] font-black uppercase text-slate-500 tracking-widest">INTERNE HINWEISE</span>
+                        <span class="text-[9px] font-black uppercase text-slate-500 tracking-widest">HINWEISE</span>
                         <textarea id="interne_infos" rows="4" class="w-full bg-slate-800 border-2 border-slate-700 rounded-2xl p-5 text-xs font-bold text-white outline-none focus:border-blue-500 transition-all" placeholder="Notizen..."></textarea>
                     </div>
                     <div class="space-y-3">
-                        <span class="text-[9px] font-black uppercase text-blue-400 tracking-widest">BAUSTELLEN-PROTOKOLL</span>
-                        <textarea id="baustellen_protokoll" rows="4" class="w-full bg-slate-800 border-2 border-slate-700 rounded-2xl p-5 text-xs font-bold text-white outline-none focus:border-blue-500 transition-all" placeholder="Rückmeldung vom Ort..."></textarea>
+                        <span class="text-[9px] font-black uppercase text-blue-400 tracking-widest">PROTOKOLL</span>
+                        <textarea id="baustellen_protokoll" rows="4" class="w-full bg-slate-800 border-2 border-slate-700 rounded-2xl p-5 text-xs font-bold text-white outline-none focus:border-blue-500 transition-all" placeholder="Rückmeldung..."></textarea>
                     </div>
                 </div>
             </div>
 
             <footer class="flex gap-4 pb-12">
                 <button onclick="saveToCloud()" class="flex-[3] bg-blue-600 hover:bg-blue-500 text-white font-black py-6 rounded-2xl shadow-xl transition-all uppercase text-xs tracking-widest flex items-center justify-center gap-3">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zM6.293 6.707a1 1 0 010-1.414l3-3a1 1 0 011.414 0l3 3a1 1 0 01-1.414 1.414L11 5.414V13a1 1 0 11-2 0V5.414L7.707 6.707a1 1 0 01-1.414 0z" clip-rule="evenodd" /></svg>
-                    SPEICHERN & CLOUD-SYNC
+                    SPEICHERN & SYNC
                 </button>
                 <button onclick="window.print()" class="flex-1 bg-slate-800 text-white font-black rounded-2xl hover:bg-slate-700 transition-all uppercase text-[10px] tracking-widest">
-                    DRUCKEN / PDF
+                    PDF
                 </button>
             </footer>
         </div>
 
-        <!-- Kalender Tab -->
         <div id="calendar-tab" class="tab-content hidden">
             <div class="card p-0 bg-slate-900 border-slate-800">
                 <div class="flex justify-between items-center p-8 border-b border-slate-800">
-                    <h2 id="week-label" class="text-2xl font-black italic text-white tracking-tighter uppercase">KALENDER</h2>
+                    <h2 id="week-label" class="text-2xl font-black italic text-white tracking-tighter uppercase italic">KALENDER (1H SLOTS)</h2>
                     <div class="flex gap-2">
                         <button onclick="changeWeek(-1)" class="w-10 h-10 bg-slate-800 border border-slate-700 rounded-lg text-white flex items-center justify-center hover:bg-slate-700">←</button>
                         <button onclick="currentWeekStart = new Date(); renderWorkWeek();" class="px-4 bg-slate-800 border border-slate-700 rounded-lg text-[9px] font-black text-slate-400 uppercase hover:text-white transition-colors">HEUTE</button>
