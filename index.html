@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>GIS SYSTEM CLOUD - MODERN UI</title>
+    <title>GIS SYSTEM CLOUD - SECURE</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
     <script src="https://cdn.tailwindcss.com"></script>
     <script type="module">
@@ -29,7 +29,6 @@
         let allProjects = []; 
         let currentWeekStart = new Date(); 
         let currentFiles = []; 
-
         const CHUNK_SIZE = 850000; 
 
         // Authentifizierung initialisieren
@@ -51,6 +50,23 @@
                 setupProjectsListener();
             } else { initAuth(); }
         });
+
+        // Code Überprüfung
+        window.checkAppCode = () => {
+            const input = document.getElementById('app-code-input').value;
+            const correctCode = "3161";
+            const overlay = document.getElementById('lock-overlay');
+            const errorMsg = document.getElementById('code-error');
+
+            if (input === correctCode) {
+                overlay.style.opacity = "0";
+                setTimeout(() => overlay.classList.add('hidden'), 500);
+            } else {
+                errorMsg.classList.remove('hidden');
+                document.getElementById('app-code-input').value = "";
+                setTimeout(() => errorMsg.classList.add('hidden'), 3000);
+            }
+        };
 
         // Status-Meldungen anzeigen
         function showStatus(msg, type = "success") {
@@ -264,7 +280,7 @@
             return monday;
         }
 
-        // Archiv rendern mit Löschfunktion
+        // Archiv rendern
         function renderArchiv(filterText = "") {
             const list = document.getElementById('archiv-liste');
             if(!list) return;
@@ -310,22 +326,13 @@
 
         window.deleteProject = async (id, event) => {
             if (event) { event.preventDefault(); event.stopPropagation(); }
-            
-            // Custom Confirmation
             const confirmed = confirm(`ACHTUNG: Möchtest du das Projekt "${id}" unwiderruflich aus der Cloud löschen? Alle Pläne und Daten gehen verloren.`);
             if (!confirmed) return;
-
             showStatus("LÖSCHE PROJEKT...", "info");
             try {
-                // Lösche Hauptdokument
                 await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'projekte', id));
-                
-                // Hinweis: Unterkollektionen (Chunks) werden in Firestore nicht automatisch gelöscht, 
-                // müssten aber manuell bereinigt werden, falls Speicherplatz kritisch ist.
-                
                 showStatus(`PROJEKT "${id}" ENTFERNT`, "success");
             } catch (e) {
-                console.error(e);
                 showStatus("FEHLER BEIM LÖSCHEN", "error");
             }
         };
@@ -444,7 +451,10 @@
         .dark-box { background: #0f172a; border-radius: 2.5rem; color: white; padding: 2.5rem; }
         .blue-box { background: #1e3a8a; border-radius: 2.5rem; color: white; padding: 2.5rem; }
         
-        /* Custom Scrollbar */
+        /* Lock Overlay Style */
+        #lock-overlay { transition: opacity 0.5s ease-in-out; }
+        .code-input { letter-spacing: 1rem; text-align: center; }
+
         ::-webkit-scrollbar { width: 8px; height: 8px; }
         ::-webkit-scrollbar-track { background: transparent; }
         ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
@@ -452,6 +462,25 @@
     </style>
 </head>
 <body class="p-4 md:p-8 lg:p-12">
+
+    <!-- App Lock Overlay -->
+    <div id="lock-overlay" class="fixed inset-0 bg-slate-950 z-[9999] flex items-center justify-center p-6">
+        <div class="max-w-md w-full bg-slate-900 border border-white/10 p-12 rounded-[3rem] shadow-2xl text-center">
+            <div class="flex justify-center mb-8">
+                <div class="bg-blue-600/10 p-6 rounded-3xl">
+                    <svg class="w-12 h-12 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" stroke-width="2" stroke-linecap="round"></path></svg>
+                </div>
+            </div>
+            <h2 class="text-white text-2xl font-black italic uppercase tracking-tighter mb-2">SYSTEMGESPERRT</h2>
+            <p class="text-slate-500 text-[10px] font-black uppercase tracking-widest mb-10">Zugriffscode erforderlich</p>
+            
+            <input type="password" id="app-code-input" maxlength="4" placeholder="••••" class="code-input w-full bg-slate-950 border border-white/5 rounded-2xl py-6 px-4 text-3xl font-black text-blue-500 outline-none focus:border-blue-600 transition-all mb-6">
+            
+            <p id="code-error" class="text-red-500 text-[9px] font-black uppercase tracking-widest mb-6 hidden">FALSCHER CODE</p>
+
+            <button onclick="checkAppCode()" class="w-full bg-blue-600 text-white font-black py-5 rounded-2xl text-[11px] uppercase italic tracking-[0.2em] shadow-lg shadow-blue-600/20 hover:scale-105 transition-all">Sperre aufheben</button>
+        </div>
+    </div>
 
     <div id="status-msg" class="fixed opacity-0 pointer-events-none z-[1000]"></div>
 
@@ -650,5 +679,13 @@
 
     </div>
 
+    <script>
+        // Tastaturunterstützung für Code-Eingabe
+        document.getElementById('app-code-input').addEventListener('keypress', function (e) {
+            if (e.key === 'Enter') {
+                checkAppCode();
+            }
+        });
+    </script>
 </body>
 </html>
