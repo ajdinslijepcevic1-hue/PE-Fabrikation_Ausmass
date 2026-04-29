@@ -26,18 +26,22 @@
         const db = getFirestore(app);
 
         let currentUser = null;
-        let allProjects = []; 
-        let currentWeekStart = new Date(); 
-        let currentFiles = []; 
-        const CHUNK_SIZE = 850000; 
+        let allProjects = [];
+        let currentWeekStart = new Date();
+        let currentFiles = [];
+        // FIX 1: Chunk-Größe reduziert auf 700KB — Firestore erlaubt max. 1MB pro Dokument,
+        // mit Overhead durch Feldnamen etc. ist 700KB sicherer, besonders für Bilder (Base64 +33%)
+        const CHUNK_SIZE = 700000;
         const ACTION_CODE = "3161";
+        // FIX 2: Auto-Löschung nach 50 Tagen — Datum wird beim Speichern gesetzt und geprüft
+        const MAX_AGE_DAYS = 50;
 
-        // Authentifizierung initialisieren
+        // Authentifizierung
         async function initAuth() {
             try {
                 await setPersistence(auth, browserLocalPersistence);
                 if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                    try { await signInWithCustomToken(auth, __initial_auth_token); } 
+                    try { await signInWithCustomToken(auth, __initial_auth_token); }
                     catch (e) { await signInAnonymously(auth); }
                 } else {
                     await signInAnonymously(auth);
@@ -49,8 +53,37 @@
             if (user) {
                 currentUser = user;
                 setupProjectsListener();
+                // FIX 3: Auto-Cleanup alter Projekte beim Start prüfen
+                checkAndDeleteOldProjects();
             } else { initAuth(); }
         });
+
+        // FIX 3: Projekte die älter als 50 Tage sind automatisch löschen
+        async function checkAndDeleteOldProjects() {
+            try {
+                const now = new Date();
+                const cutoffDate = new Date(now.getTime() - (MAX_AGE_DAYS * 24 * 60 * 60 * 1000));
+                const snap = await getDocs(collection(db, 'artifacts', appId, 'public', 'data', 'projekte'));
+                let deletedCount = 0;
+                for (const docSnap of snap.docs) {
+                    const data = docSnap.data();
+                    // Prüfe lastUpdated oder createdAt
+                    const refDate = data.lastUpdated || data.createdAt;
+                    if (refDate) {
+                        const projectDate = new Date(refDate);
+                        if (projectDate < cutoffDate) {
+                            await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'projekte', docSnap.id));
+                            deletedCount++;
+                        }
+                    }
+                }
+                if (deletedCount > 0) {
+                    showStatus(`${deletedCount} ALTE PROJEKT(E) AUTO-GELÖSCHT (>50 TAGE)`, "info");
+                }
+            } catch (e) {
+                console.error("Auto-cleanup Fehler:", e);
+            }
+        }
 
         // Schutz-Funktion für Änderungen
         window.requestSecureAction = (callback) => {
@@ -62,7 +95,7 @@
             }
         };
 
-        // Status-Meldungen anzeigen
+        // Status-Meldungen
         function showStatus(msg, type = "success") {
             const status = document.getElementById('status-msg');
             if (!status) return;
@@ -73,14 +106,25 @@
             setTimeout(() => { if(status) { status.style.opacity = "0"; } }, 4000);
         }
 
+        // FIX 4: Ladefortschritt für Dateien anzeigen
+        function updateFileLoadingState(fileId, state, progress = null) {
+            const indicator = document.getElementById(`loading-${fileId}`);
+            if (!indicator) return;
+            if (state === 'loading') {
+                indicator.innerHTML = `<span class="text-amber-400 text-[8px] font-black uppercase animate-pulse">⏳ WIRD GELADEN${progress ? ` ${progress}%` : '...'}</span>`;
+            } else if (state === 'ready') {
+                indicator.innerHTML = `<span class="text-green-400 text-[8px] font-black uppercase">✅ BEREIT</span>`;
+            } else if (state === 'error') {
+                indicator.innerHTML = `<span class="text-red-400 text-[8px] font-black uppercase">❌ FEHLER</span>`;
+            }
+        }
+
         // Datei-Handling
         async function handleFileUpload(event) {
             const files = event.target.files;
             if (!files.length) return;
-            
-            // Auch das Hochladen von Dateien gilt als Änderung
             for (let file of files) {
-                if (file.size > 15 * 1024 * 1024) { 
+                if (file.size > 15 * 1024 * 1024) {
                     showStatus(`${file.name} ZU GROSS (MAX 15MB)`, "error");
                     continue;
                 }
@@ -90,17 +134,20 @@
                         name: file.name,
                         type: file.type,
                         size: file.size,
-                        data: e.target.result, 
+                        // FIX 5: Daten direkt als Base64 im Speicher halten — kein Datenverlust
+                        data: e.target.result,
                         id: crypto.randomUUID(),
-                        isNew: true
+                        isNew: true,
+                        // FIX 6: Status "local" — Datei ist lokal vorhanden aber noch nicht in Cloud
+                        loadState: 'local'
                     };
                     currentFiles.push(fileData);
                     renderFileList();
-                    showStatus("PLAN HINZUGEFÜGT (LOKAL)");
+                    showStatus(`${file.name} HINZUGEFÜGT (LOKAL)`);
                 };
                 reader.readAsDataURL(file);
             }
-            event.target.value = ""; 
+            event.target.value = "";
         }
 
         function renderFileList() {
@@ -114,30 +161,67 @@
             currentFiles.forEach(file => {
                 const div = document.createElement('div');
                 div.className = "flex items-center justify-between p-4 bg-white/5 rounded-2xl border border-white/10 mb-2";
+                
+                // FIX 7: Download-Button deaktiviert wenn Daten noch laden
+                const isReady = file.data && file.data.length > 0;
+                const isLocal = file.loadState === 'local';
+                const isLoading = file.loadState === 'loading';
+
                 div.innerHTML = `
                     <div class="flex items-center gap-3">
-                        <div class="p-2 bg-slate-800 rounded-lg"><svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" stroke-width="2"></path></svg></div>
+                        <div class="p-2 bg-slate-800 rounded-lg">
+                            <svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" stroke-width="2"></path>
+                            </svg>
+                        </div>
                         <div class="flex flex-col">
                             <span class="text-[11px] font-black text-white truncate max-w-[180px] uppercase italic">${file.name}</span>
                             <span class="text-[8px] text-blue-400 font-black uppercase tracking-widest">${(file.size / 1024 / 1024).toFixed(2)} MB</span>
+                            <div id="loading-${file.id}">
+                                ${isLocal ? '<span class="text-green-400 text-[8px] font-black uppercase">✅ LOKAL BEREIT</span>' : 
+                                  isLoading ? '<span class="text-amber-400 text-[8px] font-black uppercase animate-pulse">⏳ WIRD GELADEN...</span>' :
+                                  isReady ? '<span class="text-green-400 text-[8px] font-black uppercase">✅ BEREIT</span>' : 
+                                  '<span class="text-slate-500 text-[8px] font-black uppercase">⏳ WARTE...</span>'}
+                            </div>
                         </div>
                     </div>
-                    <div class="flex gap-2">
-                        <button onclick="downloadFile('${file.id}')" class="text-white hover:text-blue-400 transition-colors">📥</button>
-                        <button onclick="removeFile('${file.id}')" class="text-slate-500 hover:text-red-500 transition-colors">🗑️</button>
+                    <div class="flex gap-2 items-center">
+                        ${!isReady && !isLocal ? `
+                            <button onclick="retryLoadFile('${file.id}')" title="Erneut versuchen" class="text-amber-400 hover:text-amber-300 transition-colors text-lg">🔄</button>
+                        ` : ''}
+                        <button onclick="downloadFile('${file.id}')" 
+                            class="transition-colors text-lg ${isReady || isLocal ? 'text-white hover:text-blue-400' : 'text-slate-600 cursor-not-allowed'}"
+                            ${!isReady && !isLocal ? 'disabled title="Datei wird noch geladen..."' : ''}>📥</button>
+                        <button onclick="removeFile('${file.id}')" class="text-slate-500 hover:text-red-500 transition-colors text-lg">🗑️</button>
                     </div>
                 `;
                 list.appendChild(div);
             });
         }
 
+        // FIX 8: Datei nochmal laden versuchen
+        window.retryLoadFile = async (fileId) => {
+            const file = currentFiles.find(f => f.id === fileId);
+            if (!file) return;
+            const currentProjectId = document.getElementById('projekt_id')?.value.trim();
+            if (!currentProjectId) { showStatus("KEIN PROJEKT GELADEN", "error"); return; }
+            showStatus("LADE DATEI ERNEUT...", "info");
+            await loadFileDataChunks(currentProjectId, fileId);
+        };
+
         window.downloadFile = (id) => {
             const file = currentFiles.find(f => f.id === id);
-            if (!file || !file.data) { showStatus("DATEI NOCH NICHT GELADEN", "error"); return; }
+            if (!file) { showStatus("DATEI NICHT GEFUNDEN", "error"); return; }
+            if (!file.data || file.data.length === 0) {
+                showStatus("DATEI WIRD NOCH GELADEN — BITTE WARTEN", "error");
+                return;
+            }
             const link = document.createElement('a');
             link.href = file.data;
             link.download = file.name;
+            document.body.appendChild(link);
             link.click();
+            document.body.removeChild(link);
         };
 
         window.removeFile = (id) => {
@@ -145,7 +229,7 @@
             renderFileList();
         };
 
-        // Echtzeit-Überwachung der Projekte
+        // Echtzeit-Überwachung
         function setupProjectsListener() {
             const q = collection(db, 'artifacts', appId, 'public', 'data', 'projekte');
             onSnapshot(q, (snap) => {
@@ -156,7 +240,7 @@
             }, (err) => console.error(err));
         }
 
-        // Speichern (JETZT GESCHÜTZT)
+        // Speichern (GESCHÜTZT)
         async function performSave() {
             if(!currentUser) { showStatus("NICHT ANGEMELDET", "error"); return; }
             const data = getFormData();
@@ -167,26 +251,71 @@
 
             try {
                 const projectRef = doc(db, 'artifacts', appId, 'public', 'data', 'projekte', data.projekt_id);
-                const fileMetadata = currentFiles.map(f => ({ id: f.id, name: f.name, size: f.size, type: f.type }));
-                await setDoc(projectRef, { ...data, files: fileMetadata }, { merge: true });
+                // FIX 9: Metadaten mit chunkCount speichern — so weiß der Download wie viele Chunks erwartet werden
+                const fileMetadata = currentFiles.map(f => ({
+                    id: f.id,
+                    name: f.name,
+                    size: f.size,
+                    type: f.type,
+                    // Wichtig: chunkCount wird nach dem Upload gesetzt
+                }));
+                // FIX 10: createdAt beim ersten Speichern setzen (für Auto-Löschung)
+                const existingSnap = await getDoc(projectRef);
+                const createdAt = existingSnap.exists() ? (existingSnap.data().createdAt || new Date().toISOString()) : new Date().toISOString();
+                
+                await setDoc(projectRef, {
+                    ...data,
+                    files: fileMetadata,
+                    createdAt: createdAt,
+                    lastUpdated: new Date().toISOString()
+                }, { merge: true });
 
+                // FIX 11: Jede neue Datei chunk-weise hochladen mit chunkCount am Ende
                 for (let file of currentFiles) {
-                    if (file.isNew && file.data) {
+                    if (file.isNew && file.data && file.data.length > 0) {
                         const str = file.data;
                         let partIndex = 0;
+                        const totalChunks = Math.ceil(str.length / CHUNK_SIZE);
+                        
+                        showStatus(`UPLOADING ${file.name} (${totalChunks} TEILE)...`, "info");
+                        
                         for (let i = 0; i < str.length; i += CHUNK_SIZE) {
                             const chunkContent = str.substring(i, i + CHUNK_SIZE);
-                            const chunkRef = doc(db, 'artifacts', appId, 'public', 'data', 'projekte', data.projekt_id, 'fileData', file.id, 'chunks', `part_${partIndex}`);
-                            await setDoc(chunkRef, { part: partIndex, content: chunkContent });
+                            const chunkRef = doc(
+                                db, 'artifacts', appId, 'public', 'data', 'projekte',
+                                data.projekt_id, 'fileData', file.id, 'chunks', `part_${partIndex}`
+                            );
+                            await setDoc(chunkRef, {
+                                part: partIndex,
+                                totalParts: totalChunks,
+                                content: chunkContent
+                            });
                             partIndex++;
                         }
-                        file.isNew = false; 
+                        
+                        // FIX 12: Nach dem Upload chunkCount im Projekt-Metadata aktualisieren
+                        const updatedFiles = currentFiles.map(f2 => ({
+                            id: f2.id,
+                            name: f2.name,
+                            size: f2.size,
+                            type: f2.type,
+                            chunkCount: f2.id === file.id ? partIndex : (f2.chunkCount || 0)
+                        }));
+                        await updateDoc(projectRef, { files: updatedFiles });
+                        
+                        file.isNew = false;
+                        file.loadState = 'local'; // Datei ist bereits im RAM, kein erneutes Laden nötig
+                        file.chunkCount = partIndex;
                     }
                 }
-                showStatus("ERFOLGREICH GESPEICHERT");
+                
+                showStatus("ERFOLGREICH GESPEICHERT ✓");
                 renderFileList();
                 renderWorkWeek();
-            } catch(e) { showStatus("SPEICHERFEHLER!", "error"); }
+            } catch(e) {
+                console.error("Speicherfehler:", e);
+                showStatus("SPEICHERFEHLER! BITTE ERNEUT VERSUCHEN.", "error");
+            }
         }
 
         window.saveToCloud = () => {
@@ -214,34 +343,114 @@
                     setVal('verantwortlicher', d.verantwortlicher);
                     setVal('interne_infos', d.interne_infos);
                     setVal('baustellen_protokoll', d.baustellen_protokoll);
-                    
+
                     document.querySelectorAll('input[name="art"]').forEach(rb => rb.checked = (rb.value === d.auftragsart));
                     document.querySelectorAll('input[name="mr"]').forEach(rb => rb.checked = (rb.value === d.mr_status));
-                    document.querySelectorAll('.etage-cb').forEach(cb => { 
-                        cb.checked = (d.etagen || []).includes(cb.value); 
-                        updateEtageStyle(cb); 
+                    document.querySelectorAll('.etage-cb').forEach(cb => {
+                        cb.checked = (d.etagen || []).includes(cb.value);
+                        updateEtageStyle(cb);
                     });
-                    currentFiles = d.files || [];
+
+                    // FIX 13: Dateien zuerst als "loading" setzen, dann Chunks laden
+                    currentFiles = (d.files || []).map(f => ({
+                        ...f,
+                        data: null,
+                        loadState: 'loading'
+                    }));
                     renderFileList();
-                    for (let file of currentFiles) { loadFileDataChunks(id, file.id); }
+
+                    // FIX 14: Alle Chunks parallel laden (schneller) aber mit Fehlerbehandlung pro Datei
+                    const loadPromises = currentFiles.map(file =>
+                        loadFileDataChunks(id, file.id).catch(err => {
+                            console.error(`Fehler beim Laden von ${file.name}:`, err);
+                            const idx = currentFiles.findIndex(f => f.id === file.id);
+                            if (idx !== -1) {
+                                currentFiles[idx].loadState = 'error';
+                                updateFileLoadingState(file.id, 'error');
+                            }
+                        })
+                    );
+                    
+                    // Nicht auf alle warten — UI bleibt reaktiv
+                    Promise.all(loadPromises).then(() => {
+                        showStatus("ALLE DATEIEN GELADEN ✓");
+                        renderFileList();
+                    });
+
                     closeArchiv();
                     showStatus("PROJEKT GELADEN");
                     window.scrollTo({ top: 0, behavior: 'smooth' });
                 }
-            } catch (e) { showStatus("FEHLER BEIM LADEN", "error"); }
+            } catch (e) {
+                console.error("Ladefehler:", e);
+                showStatus("FEHLER BEIM LADEN", "error");
+            }
         }
 
+        // FIX 15: Komplette Neureimplementierung von loadFileDataChunks
+        // Das war der Hauptgrund für verschwundene Fotos — Chunks wurden nicht zuverlässig zusammengesetzt
         async function loadFileDataChunks(projectId, fileId) {
             try {
-                const chunksColl = collection(db, 'artifacts', appId, 'public', 'data', 'projekte', projectId, 'fileData', fileId, 'chunks');
-                const chunkSnap = await getDocs(chunksColl);
-                let chunkMap = [];
-                chunkSnap.forEach(doc => { const c = doc.data(); chunkMap.push({ part: c.part, content: c.content }); });
-                chunkMap.sort((a, b) => a.part - b.part);
-                const fullBase64 = chunkMap.map(c => c.content).join('');
                 const idx = currentFiles.findIndex(f => f.id === fileId);
-                if (idx !== -1) { currentFiles[idx].data = fullBase64; currentFiles[idx].isNew = false; }
-            } catch (e) {}
+                if (idx !== -1) {
+                    currentFiles[idx].loadState = 'loading';
+                    updateFileLoadingState(fileId, 'loading');
+                }
+
+                const chunksRef = collection(
+                    db, 'artifacts', appId, 'public', 'data', 'projekte',
+                    projectId, 'fileData', fileId, 'chunks'
+                );
+                const chunkSnap = await getDocs(chunksRef);
+                
+                if (chunkSnap.empty) {
+                    console.warn(`Keine Chunks gefunden für Datei ${fileId}`);
+                    if (idx !== -1) {
+                        currentFiles[idx].loadState = 'error';
+                        updateFileLoadingState(fileId, 'error');
+                    }
+                    return;
+                }
+
+                // FIX 16: Chunks nach Nummer sortieren (kritisch! sonst falsche Reihenfolge)
+                const chunks = [];
+                chunkSnap.forEach(docSnap => {
+                    const c = docSnap.data();
+                    chunks.push({ part: c.part, content: c.content });
+                });
+                chunks.sort((a, b) => a.part - b.part);
+
+                // FIX 17: Prüfen ob alle Chunks da sind (Lücken erkennen)
+                for (let i = 0; i < chunks.length; i++) {
+                    if (chunks[i].part !== i) {
+                        console.error(`Chunk ${i} fehlt für Datei ${fileId}! Gefunden: part ${chunks[i].part}`);
+                        if (idx !== -1) {
+                            currentFiles[idx].loadState = 'error';
+                            updateFileLoadingState(fileId, 'error');
+                        }
+                        return;
+                    }
+                }
+
+                // FIX 18: Sicher zusammensetzen
+                const fullBase64 = chunks.map(c => c.content).join('');
+                
+                if (idx !== -1) {
+                    currentFiles[idx].data = fullBase64;
+                    currentFiles[idx].isNew = false;
+                    currentFiles[idx].loadState = 'ready';
+                    updateFileLoadingState(fileId, 'ready');
+                }
+                
+            } catch (e) {
+                console.error(`loadFileDataChunks Fehler für ${fileId}:`, e);
+                const idx = currentFiles.findIndex(f => f.id === fileId);
+                if (idx !== -1) {
+                    currentFiles[idx].loadState = 'error';
+                    updateFileLoadingState(fileId, 'error');
+                }
+                throw e;
+            }
         }
 
         function getFormData() {
@@ -250,7 +459,7 @@
                 verantwortlicher: document.getElementById('verantwortlicher')?.value || '',
                 projekt_id: document.getElementById('projekt_id')?.value.trim() || '',
                 adresse: document.getElementById('adresse')?.value || '',
-                datum: document.getElementById('datum')?.value || '', 
+                datum: document.getElementById('datum')?.value || '',
                 pl_intern: document.getElementById('pl_intern')?.value || '',
                 zeichner: document.getElementById('zeichner')?.value || '',
                 kunde: document.getElementById('kunde')?.value || '',
@@ -280,14 +489,13 @@
             return monday;
         }
 
-        // Archiv rendern
         function renderArchiv(filterText = "") {
             const list = document.getElementById('archiv-liste');
             if(!list) return;
             list.innerHTML = '';
             const lowerFilter = filterText.toLowerCase().trim();
-            const filtered = allProjects.filter(p => 
-                p.id.toLowerCase().includes(lowerFilter) || 
+            const filtered = allProjects.filter(p =>
+                p.id.toLowerCase().includes(lowerFilter) ||
                 (p.adresse || "").toLowerCase().includes(lowerFilter) ||
                 (p.kunde || "").toLowerCase().includes(lowerFilter)
             );
@@ -297,7 +505,14 @@
                 return;
             }
 
+            const now = new Date();
             filtered.sort((a, b) => new Date(b.lastUpdated || 0) - new Date(a.lastUpdated || 0)).forEach(p => {
+                // FIX 19: Alter des Projekts anzeigen im Archiv
+                const createdAt = p.createdAt ? new Date(p.createdAt) : null;
+                const ageDays = createdAt ? Math.floor((now - createdAt) / (1000 * 60 * 60 * 24)) : null;
+                const ageWarning = ageDays !== null && ageDays > 40 ? `<span class="text-red-400 text-[8px] font-black uppercase">⚠️ ${ageDays} TAGE ALT</span>` :
+                                   ageDays !== null ? `<span class="text-slate-600 text-[8px] font-black uppercase">${ageDays} TAGE</span>` : '';
+
                 const tr = document.createElement('tr');
                 tr.className = "group border-b border-white/5 hover:bg-white/[0.02] cursor-pointer transition-colors";
                 tr.onclick = (e) => { if (!e.target.closest('button')) loadProjectData(p.id); };
@@ -306,6 +521,7 @@
                         <div class="flex flex-col">
                             <span class="text-[12px] font-black uppercase italic text-white tracking-tight">${p.id}</span>
                             <span class="text-[9px] font-bold text-blue-500 uppercase tracking-widest mt-1">${p.kunde || 'KEIN KUNDE'}</span>
+                            ${ageWarning}
                         </div>
                     </td>
                     <td class="p-6">
@@ -324,7 +540,6 @@
             });
         }
 
-        // Löschen bleibt offen für alle
         window.deleteProject = async (id, event) => {
             if (event) { event.preventDefault(); event.stopPropagation(); }
             const confirmed = confirm(`ACHTUNG: Möchtest du das Projekt "${id}" unwiderruflich aus der Cloud löschen? Alle Pläne und Daten gehen verloren.`);
@@ -338,7 +553,7 @@
             }
         };
 
-        // Kalender Logik
+        // Kalender
         function renderWorkWeek() {
             const container = document.getElementById('work-week-grid');
             const weekLabel = document.getElementById('week-label');
@@ -347,7 +562,7 @@
             const monday = getMonday(new Date(currentWeekStart));
             const friday = new Date(monday); friday.setDate(monday.getDate() + 4);
             weekLabel.innerText = `KW ${getWeekNumber(monday)} | ${monday.toLocaleDateString('de-DE', {day:'2-digit', month:'2-digit'})} - ${friday.toLocaleDateString('de-DE', {day:'2-digit', month:'2-digit', year:'numeric'})}`;
-            
+
             const timeCol = document.createElement('div');
             timeCol.className = "col-span-1 border-r border-slate-200 mt-12 bg-slate-50";
             for(let h=7; h<=19; h++) {
@@ -366,26 +581,26 @@
                 dayCol.className = "col-span-2 relative min-h-[1040px] border-r border-slate-100 bg-white/50";
                 const isToday = new Date().toDateString() === dayDate.toDateString();
                 dayCol.innerHTML = `<div class="h-12 text-center flex flex-col justify-center border-b border-slate-200 sticky top-0 z-30 ${isToday ? 'bg-blue-600' : 'bg-slate-100'}"><span class="text-[9px] font-black uppercase ${isToday ? 'text-blue-100' : 'text-slate-500'}">${dayDate.toLocaleDateString('de-DE', {weekday: 'short'})}</span><span class="text-xs font-black ${isToday ? 'text-white' : 'text-slate-900'}">${dayDate.getDate()}.${dayDate.getMonth()+1}.</span></div>`;
-                
+
                 for(let h=7; h<=19; h++) {
                     const slot = document.createElement('div');
                     slot.className = "h-[80px] border-t border-slate-100 w-full";
                     dayCol.appendChild(slot);
                 }
-                
+
                 allProjects.filter(p => p.datum && p.datum.split('T')[0] === dayStr).forEach(p => {
                     const timeParts = p.datum.split('T');
                     if (timeParts.length < 2) return;
                     const [hours, minutes] = timeParts[1].split(':');
                     const hNum = parseInt(hours);
                     const mNum = parseInt(minutes);
-                    
+
                     if(hNum >= 7 && hNum < 20) {
-                        const topPos = ((hNum - 7) * 80) + (mNum / 60 * 80) + 48; 
+                        const topPos = ((hNum - 7) * 80) + (mNum / 60 * 80) + 48;
                         const entry = document.createElement('div');
                         entry.className = "absolute left-1 right-1 bg-white border-2 border-blue-500 p-2 rounded-xl shadow-lg z-20 cursor-pointer overflow-hidden flex flex-col justify-center transition-transform hover:scale-[1.02]";
-                        entry.style.top = `${topPos}px`; 
-                        entry.style.height = "76px"; 
+                        entry.style.top = `${topPos}px`;
+                        entry.style.height = "76px";
                         entry.innerHTML = `<div class="flex justify-between items-start"><span class="text-[10px] font-black truncate text-blue-600 uppercase italic">${p.id}</span><span class="text-[8px] font-black text-slate-400">${hours}:${minutes}</span></div><div class="text-[9px] text-slate-900 font-bold truncate">${p.adresse || '...'}</div>`;
                         entry.onclick = () => loadProjectData(p.id);
                         dayCol.appendChild(entry);
@@ -414,13 +629,12 @@
             }
         }
 
-        // Globale Exports
         window.switchTab = switchTab;
-        window.changeWeek = (o) => { 
+        window.changeWeek = (o) => {
             const d = new Date(currentWeekStart);
             d.setDate(d.getDate() + (o * 7));
             currentWeekStart = d;
-            renderWorkWeek(); 
+            renderWorkWeek();
         };
         window.updateEtageStyle = updateEtageStyle;
         window.openArchiv = () => { document.getElementById('archiv-modal').classList.remove('hidden'); renderArchiv(); };
@@ -439,11 +653,11 @@
         .radio-tag { cursor: pointer; display: flex; align-items: center; gap: 0.75rem; font-weight: 900; text-transform: uppercase; font-size: 10px; font-style: italic; }
         .radio-tag input { appearance: none; width: 18px; height: 18px; border: 3px solid #cbd5e1; border-radius: 50%; outline: none; }
         .radio-tag input:checked { border-color: #2563eb; background: #2563eb; box-shadow: inset 0 0 0 3px #fff; }
-        .etage-label { @apply border-2 border-slate-100 rounded-xl py-3 px-1 text-center cursor-pointer text-[10px] font-black uppercase transition-all bg-white text-slate-900 flex items-center justify-center; }
+        .etage-label { border: 2px solid #f1f5f9; border-radius: 0.75rem; padding: 0.75rem 0.25rem; text-align: center; cursor: pointer; font-size: 10px; font-weight: 900; text-transform: uppercase; transition: all 0.2s; background: white; color: #0f172a; display: flex; align-items: center; justify-content: center; }
         .btn-blue { background: #2563eb; color: #fff; font-weight: 900; text-transform: uppercase; border-radius: 1.25rem; padding: 1.25rem; font-size: 0.75rem; letter-spacing: 0.1em; width: 100%; transition: all 0.3s; box-shadow: 0 10px 30px -5px rgba(37,99,235,0.4); }
         .btn-blue:hover { transform: translateY(-2px); box-shadow: 0 15px 35px -5px rgba(37,99,235,0.5); }
         .btn-white { background: #ffffff; color: #0f172a; font-weight: 900; text-transform: uppercase; border-radius: 1.25rem; padding: 1.25rem; font-size: 0.75rem; letter-spacing: 0.1em; width: 100%; border: 2px solid #e2e8f0; }
-        .section-num { width: 32px; height: 32px; background: #0f172a; color: white; border-radius: 10px; display: flex; items-center justify-center; font-weight: 900; font-size: 12px; font-style: italic; }
+        .section-num { width: 32px; height: 32px; background: #0f172a; color: white; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-weight: 900; font-size: 12px; font-style: italic; }
         .mr-card { border: 2px solid #e2e8f0; border-radius: 1.5rem; padding: 1.25rem; margin-bottom: 0.75rem; display: flex; justify-content: space-between; align-items: center; font-weight: 800; font-style: italic; font-size: 9px; text-transform: uppercase; cursor: pointer; transition: 0.2s; }
         .mr-card:hover { border-color: #2563eb; }
         .mr-card.red { color: #ef4444; border-color: #fee2e2; }
@@ -451,7 +665,6 @@
         .mr-card input:checked { border-color: #2563eb; background: #2563eb; box-shadow: inset 0 0 0 2px #fff; }
         .dark-box { background: #0f172a; border-radius: 2.5rem; color: white; padding: 2.5rem; }
         .blue-box { background: #1e3a8a; border-radius: 2.5rem; color: white; padding: 2.5rem; }
-        
         ::-webkit-scrollbar { width: 8px; height: 8px; }
         ::-webkit-scrollbar-track { background: transparent; }
         ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
@@ -468,7 +681,7 @@
             <div class="p-10 border-b border-white/5 flex justify-between items-center">
                 <div>
                     <h3 class="font-black text-white uppercase italic text-2xl tracking-tighter">OBJEKT <span class="text-blue-500">ARCHIV</span></h3>
-                    <p class="text-[9px] font-black text-slate-500 uppercase tracking-widest mt-1">Verwalte deine Cloud-Projekte</p>
+                    <p class="text-[9px] font-black text-slate-500 uppercase tracking-widest mt-1">Verwalte deine Cloud-Projekte · Auto-Löschung nach 50 Tagen</p>
                 </div>
                 <button onclick="closeArchiv()" class="bg-white/5 hover:bg-white/10 text-white w-14 h-14 rounded-full flex items-center justify-center text-3xl font-light transition-all">&times;</button>
             </div>
@@ -487,7 +700,7 @@
     </div>
 
     <div class="max-w-6xl mx-auto space-y-10">
-        
+
         <!-- Header -->
         <header class="flex justify-between items-center no-print">
             <div class="flex items-center gap-2">
@@ -500,7 +713,7 @@
             </div>
         </header>
 
-        <!-- Tabs Switch -->
+        <!-- Tabs -->
         <div class="flex justify-center no-print">
             <div class="bg-white p-1.5 rounded-2xl flex gap-1 shadow-sm border border-slate-200">
                 <button onclick="switchTab('form-tab')" class="px-8 py-3 rounded-xl text-[10px] font-black uppercase italic tracking-widest transition-all hover:bg-slate-50">📋 Auftrag</button>
@@ -510,9 +723,8 @@
 
         <!-- Form Tab -->
         <div id="form-tab" class="tab-content space-y-12">
-            
             <div class="bg-card p-8 md:p-14 space-y-16">
-                
+
                 <!-- 00 Status -->
                 <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-8 border-b border-slate-100 pb-10">
                     <div class="flex gap-12">
@@ -531,21 +743,13 @@
                         <div class="section-num">01</div>
                         <h3 class="font-black uppercase italic tracking-tighter text-lg">Projektstamm</h3>
                     </div>
-
                     <div class="bg-slate-50 p-10 rounded-[2.5rem] mb-12 border-2 border-slate-100">
                         <label class="label-cap">Objektbezeichnung / Cloud-ID (Pflichtfeld)</label>
                         <input type="text" id="projekt_id" class="w-full bg-transparent border-none outline-none font-black text-2xl md:text-3xl uppercase italic text-blue-600 placeholder:text-slate-200" placeholder="NAME DES OBJEKTS">
                     </div>
-
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-x-12 gap-y-10">
-                        <div class="flex flex-col">
-                            <label class="label-cap">Adresse / Einsatzort</label>
-                            <input type="text" id="adresse" class="input-box italic" placeholder="STRASSE NR, PLZ ORT">
-                        </div>
-                        <div class="flex flex-col">
-                            <label class="label-cap">Datum / Zeit</label>
-                            <input type="datetime-local" id="datum" class="input-box">
-                        </div>
+                        <div class="flex flex-col"><label class="label-cap">Adresse / Einsatzort</label><input type="text" id="adresse" class="input-box italic" placeholder="STRASSE NR, PLZ ORT"></div>
+                        <div class="flex flex-col"><label class="label-cap">Datum / Zeit</label><input type="datetime-local" id="datum" class="input-box"></div>
                         <div class="grid grid-cols-2 gap-8">
                             <div class="flex flex-col"><label class="label-cap">PL Intern</label><input type="text" id="pl_intern" class="input-box italic"></div>
                             <div class="flex flex-col"><label class="label-cap">Zeichner</label><input type="text" id="zeichner" class="input-box italic"></div>
@@ -554,18 +758,12 @@
                             <div class="flex flex-col"><label class="label-cap">Kunde</label><input type="text" id="kunde" class="input-box italic"></div>
                             <div class="flex flex-col"><label class="label-cap">PL Extern</label><input type="text" id="pl_extern" class="input-box italic"></div>
                         </div>
-                        <div class="flex flex-col">
-                            <label class="label-cap">Tel. Bauleitung</label>
-                            <input type="text" id="tel_bauleitung" class="input-box italic">
-                        </div>
-                        <div class="flex flex-col">
-                            <label class="label-cap">Tel. Monteur</label>
-                            <input type="text" id="tel_monteur" class="input-box italic" placeholder="M: +41...">
-                        </div>
+                        <div class="flex flex-col"><label class="label-cap">Tel. Bauleitung</label><input type="text" id="tel_bauleitung" class="input-box italic"></div>
+                        <div class="flex flex-col"><label class="label-cap">Tel. Monteur</label><input type="text" id="tel_monteur" class="input-box italic" placeholder="M: +41..."></div>
                     </div>
                 </section>
 
-                <!-- 02 & 03 Meterriss & Etagen -->
+                <!-- 02 & 03 -->
                 <div class="grid grid-cols-1 lg:grid-cols-2 gap-16">
                     <section>
                         <div class="flex items-center gap-4 mb-8">
@@ -578,7 +776,6 @@
                             <label class="mr-card red">Kein Meterriss <input type="radio" name="mr" value="Keiner"></label>
                         </div>
                     </section>
-
                     <section>
                         <div class="flex items-center gap-4 mb-8">
                             <div class="section-num">03</div>
@@ -617,12 +814,21 @@
 
                 <!-- Plan Cloud -->
                 <section class="bg-slate-950 p-10 rounded-[3rem] shadow-2xl">
-                    <h3 class="font-black italic uppercase text-white text-2xl mb-10 tracking-tighter">PLAN <span class="text-blue-500">CLOUD</span></h3>
+                    <h3 class="font-black italic uppercase text-white text-2xl mb-2 tracking-tighter">PLAN <span class="text-blue-500">CLOUD</span></h3>
+                    <!-- FIX 20: Klarer Hinweis für Benutzer -->
+                    <p class="text-[9px] font-black text-slate-500 uppercase tracking-widest mb-10">
+                        ⚠️ Nach dem Öffnen eines Projekts bitte kurz warten bis alle Dateien geladen sind (✅ BEREIT) bevor du herunterlädst
+                    </p>
                     <div class="grid grid-cols-1 lg:grid-cols-2 gap-10">
                         <label class="border-2 border-dashed border-white/10 rounded-[2rem] p-12 flex flex-col items-center justify-center cursor-pointer hover:bg-white/5 transition-all group">
-                            <input type="file" multiple accept=".pdf" onchange="handleFileUpload(event)" class="hidden">
-                            <div class="bg-blue-600 p-4 rounded-2xl mb-4 shadow-lg shadow-blue-600/20"><svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" stroke-width="3"></path></svg></div>
-                            <span class="text-[10px] font-black uppercase tracking-widest text-white italic">Datei hochladen</span>
+                            <input type="file" multiple accept=".pdf,.jpg,.jpeg,.png" onchange="handleFileUpload(event)" class="hidden">
+                            <div class="bg-blue-600 p-4 rounded-2xl mb-4 shadow-lg shadow-blue-600/20">
+                                <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" stroke-width="3"></path>
+                                </svg>
+                            </div>
+                            <span class="text-[10px] font-black uppercase tracking-widest text-white italic">PDF / Fotos hochladen</span>
+                            <span class="text-[8px] font-black uppercase tracking-widest text-slate-500 mt-2">Max. 15MB pro Datei</span>
                         </label>
                         <div id="file-list" class="space-y-3"></div>
                     </div>
@@ -656,6 +862,5 @@
         </div>
 
     </div>
-
 </body>
 </html>
