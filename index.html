@@ -452,6 +452,84 @@
             } catch (e) { showStatus("FEHLER BEIM LÖSCHEN", "error"); }
         };
 
+        // "Erledigt" markieren
+        window.markDone = async (id, event) => {
+            if (event) { event.preventDefault(); event.stopPropagation(); }
+            const project = allProjects.find(p => p.id === id);
+            if (!project) return;
+            if (project.erledigt) {
+                const undo = confirm(`"${id}" erledigt von: ${project.erledigtVon}\n\nAls OFFEN markieren?`);
+                if (!undo) return;
+                try {
+                    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'projekte', id), {
+                        erledigt: false, erledigtVon: null, erledigtAm: null
+                    });
+                    showStatus(`"${id}" WIEDER ALS OFFEN MARKIERT`, "info");
+                } catch(e) { showStatus("FEHLER BEIM AKTUALISIEREN", "error"); }
+                return;
+            }
+            showDoneModal(id);
+        };
+
+        function showDoneModal(projectId) {
+            const overlay = document.createElement('div');
+            overlay.id = 'done-modal-overlay';
+            overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.75);backdrop-filter:blur(8px);z-index:9999;display:flex;align-items:center;justify-content:center;padding:1rem;';
+            overlay.innerHTML = `
+                <div style="background:#fff;border-radius:1.5rem;padding:2rem;width:100%;max-width:380px;box-shadow:0 25px 60px rgba(0,0,0,0.3);">
+                    <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:1.25rem;">
+                        <div style="width:44px;height:44px;background:#16a34a;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:1.3rem;flex-shrink:0;">✅</div>
+                        <div>
+                            <div style="font-weight:900;font-size:14px;text-transform:uppercase;letter-spacing:-0.01em;color:#0f172a;font-family:Inter,sans-serif;">Auftrag erledigt</div>
+                            <div style="font-size:10px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:0.05em;font-family:Inter,sans-serif;">${projectId}</div>
+                        </div>
+                    </div>
+                    <label style="font-size:9px;font-weight:900;text-transform:uppercase;color:#94a3b8;letter-spacing:0.1em;display:block;margin-bottom:0.5rem;font-family:Inter,sans-serif;">Dein Name (Pflicht)</label>
+                    <input id="done-name-input" type="text" placeholder="VORNAME NACHNAME"
+                        style="width:100%;border:2px solid #e2e8f0;border-radius:0.75rem;padding:0.875rem 1rem;font-size:16px;font-weight:800;text-transform:uppercase;outline:none;color:#0f172a;font-family:Inter,sans-serif;box-sizing:border-box;"
+                        onfocus="this.style.borderColor='#16a34a'" onblur="this.style.borderColor='#e2e8f0'">
+                    <div style="display:flex;gap:0.75rem;margin-top:1.25rem;">
+                        <button onclick="closeDoneModal()"
+                            style="flex:1;padding:0.875rem;border-radius:0.875rem;border:2px solid #e2e8f0;background:white;font-weight:900;font-size:11px;text-transform:uppercase;letter-spacing:0.05em;cursor:pointer;color:#64748b;font-family:Inter,sans-serif;">
+                            Abbrechen
+                        </button>
+                        <button onclick="confirmDone('${projectId}')"
+                            style="flex:1;padding:0.875rem;border-radius:0.875rem;border:none;background:#16a34a;color:white;font-weight:900;font-size:11px;text-transform:uppercase;letter-spacing:0.05em;cursor:pointer;box-shadow:0 4px 15px rgba(22,163,74,0.4);font-family:Inter,sans-serif;">
+                            ✓ Bestätigen
+                        </button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(overlay);
+            setTimeout(() => document.getElementById('done-name-input')?.focus(), 100);
+            overlay.querySelector('#done-name-input').addEventListener('keydown', e => {
+                if (e.key === 'Enter') confirmDone(projectId);
+            });
+        }
+
+        window.closeDoneModal = () => { document.getElementById('done-modal-overlay')?.remove(); };
+
+        window.confirmDone = async (projectId) => {
+            const nameInput = document.getElementById('done-name-input');
+            const name = nameInput?.value.trim();
+            if (!name) {
+                nameInput.style.borderColor = '#ef4444';
+                nameInput.placeholder = 'NAME ERFORDERLICH!';
+                nameInput.focus();
+                return;
+            }
+            closeDoneModal();
+            showStatus("WIRD GESPEICHERT...", "info");
+            try {
+                await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'projekte', projectId), {
+                    erledigt: true,
+                    erledigtVon: name.toUpperCase(),
+                    erledigtAm: new Date().toISOString()
+                });
+                showStatus('ERLEDIGT VON ' + name.toUpperCase(), "success");
+            } catch(e) { showStatus("FEHLER BEIM SPEICHERN", "error"); }
+        };
+
         function renderWorkWeek() {
             const container = document.getElementById('work-week-grid');
             const weekLabel = document.getElementById('week-label');
@@ -496,17 +574,25 @@
                         dayProjects.forEach(p => {
                             const timeParts = (p.datum || '').split('T');
                             const timeStr = timeParts.length > 1 ? timeParts[1].substring(0,5) : '';
+                            const isDone = p.erledigt === true;
                             const entry = document.createElement('div');
-                            entry.className = "px-4 py-3 bg-white border-t border-slate-100 flex items-center gap-3 cursor-pointer active:bg-blue-50";
+                            entry.className = `px-3 py-2.5 border-t border-slate-100 flex items-center gap-2 ${isDone ? 'bg-green-50' : 'bg-white active:bg-blue-50'}`;
                             entry.innerHTML = `
-                                <div class="w-2 h-2 rounded-full bg-blue-500 flex-shrink-0"></div>
-                                <div class="flex-1 min-w-0">
-                                    <div class="font-black text-blue-600 text-[12px] uppercase italic truncate">${p.id}</div>
-                                    <div class="text-[10px] text-slate-600 font-bold truncate">${p.adresse || '–'}</div>
+                                <div class="w-2 h-2 rounded-full flex-shrink-0 ${isDone ? 'bg-green-500' : 'bg-blue-500'}"></div>
+                                <div class="flex-1 min-w-0" onclick="loadProjectData('${p.id}')">
+                                    <div class="font-black text-[12px] uppercase italic truncate ${isDone ? 'text-green-700 line-through' : 'text-blue-600'}">${p.id}</div>
+                                    <div class="text-[10px] font-bold truncate ${isDone ? 'text-green-600' : 'text-slate-600'}">${p.adresse || '–'}</div>
+                                    ${isDone ? `<div class="text-[9px] font-black text-green-600 uppercase">✅ ${p.erledigtVon}</div>` : ''}
                                 </div>
-                                <div class="text-[10px] font-black text-slate-400 flex-shrink-0">${timeStr}</div>
+                                <div class="flex items-center gap-1.5 flex-shrink-0">
+                                    <span class="text-[9px] font-black text-slate-400">${timeStr}</span>
+                                    <button onclick="markDone('${p.id}', event)"
+                                        style="min-width:36px;height:36px;border-radius:10px;border:none;cursor:pointer;font-size:11px;font-weight:900;text-transform:uppercase;font-family:Inter,sans-serif;display:flex;align-items:center;justify-content:center;${isDone ? 'background:#dcfce7;color:#16a34a;' : 'background:#f0f9ff;color:#2563eb;'}"
+                                        title="${isDone ? 'Als offen markieren' : 'Als erledigt markieren'}">
+                                        ${isDone ? '↩' : '✓'}
+                                    </button>
+                                </div>
                             `;
-                            entry.onclick = () => loadProjectData(p.id);
                             dayCard.appendChild(entry);
                         });
                     }
@@ -543,12 +629,30 @@
                         const hNum = parseInt(hours); const mNum = parseInt(minutes);
                         if(hNum >= 7 && hNum < 20) {
                             const topPos = ((hNum - 7) * 80) + (mNum / 60 * 80) + 48;
+                            const isDone = p.erledigt === true;
                             const entry = document.createElement('div');
-                            entry.className = "absolute left-1 right-1 bg-white border-2 border-blue-500 p-2 rounded-xl shadow-lg z-20 cursor-pointer overflow-hidden flex flex-col justify-center transition-transform hover:scale-[1.02]";
+                            entry.className = `absolute left-1 right-1 p-2 rounded-xl shadow-lg z-20 overflow-hidden flex flex-col justify-between transition-all hover:shadow-xl ${isDone ? 'bg-green-50 border-2 border-green-400' : 'bg-white border-2 border-blue-500'}`;
                             entry.style.top = `${topPos}px`;
                             entry.style.height = "76px";
-                            entry.innerHTML = `<div class="flex justify-between items-start"><span class="text-[10px] font-black truncate text-blue-600 uppercase italic">${p.id}</span><span class="text-[8px] font-black text-slate-400">${hours}:${minutes}</span></div><div class="text-[9px] text-slate-900 font-bold truncate">${p.adresse || '...'}</div>`;
-                            entry.onclick = () => loadProjectData(p.id);
+                            entry.innerHTML = `
+                                <div class="flex justify-between items-start gap-1">
+                                    <span class="text-[10px] font-black truncate uppercase italic ${isDone ? 'text-green-700 line-through' : 'text-blue-600'}">${p.id}</span>
+                                    <span class="text-[8px] font-black text-slate-400 flex-shrink-0">${hours}:${minutes}</span>
+                                </div>
+                                <div class="text-[9px] font-bold truncate ${isDone ? 'text-green-600' : 'text-slate-700'}">${p.adresse || '...'}</div>
+                                <div class="flex items-center justify-between gap-1">
+                                    ${isDone
+                                        ? `<span class="text-[8px] font-black text-green-600 uppercase truncate">✅ ${p.erledigtVon}</span>`
+                                        : `<span class="text-[8px] text-slate-400 truncate">&nbsp;</span>`
+                                    }
+                                    <button onclick="markDone('${p.id}', event)"
+                                        style="flex-shrink:0;padding:2px 6px;border-radius:6px;border:none;cursor:pointer;font-size:9px;font-weight:900;text-transform:uppercase;font-family:Inter,sans-serif;${isDone ? 'background:#dcfce7;color:#16a34a;' : 'background:#eff6ff;color:#2563eb;'}"
+                                        title="${isDone ? 'Rückgängig' : 'Als erledigt markieren'}">
+                                        ${isDone ? '↩ Offen' : '✓ Erledigt'}
+                                    </button>
+                                </div>
+                            `;
+                            entry.querySelector('div:first-child').addEventListener('click', () => loadProjectData(p.id));
                             dayCol.appendChild(entry);
                         }
                     });
