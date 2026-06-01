@@ -43,6 +43,7 @@
 
         let currentUser = null;
         let allProjects = [];
+        let allSnapshots = [];   // Erledigte Kalender-Snapshots (eigene Collection)
         let currentWeekStart = new Date();
         let currentFiles = [];
         const CHUNK_SIZE = 700000;
@@ -225,11 +226,20 @@
         };
 
         function setupProjectsListener() {
+            // Listener für aktive Projekte
             const q = collection(db, 'artifacts', appId, 'public', 'data', 'projekte');
             onSnapshot(q, (snap) => {
                 allProjects = [];
                 snap.forEach(d => allProjects.push({ id: d.id, ...d.data() }));
                 renderArchiv(document.getElementById('archiv-search')?.value || "");
+                if(!document.getElementById('calendar-tab').classList.contains('hidden')) renderWorkWeek();
+            }, (err) => console.error(err));
+
+            // Listener für erledigte Kalender-Snapshots
+            const sq = collection(db, 'artifacts', appId, 'public', 'data', 'kalender_snapshots');
+            onSnapshot(sq, (snap) => {
+                allSnapshots = [];
+                snap.forEach(d => allSnapshots.push({ id: d.id, ...d.data() }));
                 if(!document.getElementById('calendar-tab').classList.contains('hidden')) renderWorkWeek();
             }, (err) => console.error(err));
         }
@@ -452,36 +462,38 @@
             } catch (e) { showStatus("FEHLER BEIM LÖSCHEN", "error"); }
         };
 
-        // "Erledigt" markieren
-        window.markDone = async (id, event) => {
+        // "Erledigt" markieren — speichert Snapshot in eigener Collection
+        // Logik: Erledigte Termine bleiben fix im Kalender, unabhängig vom Projekt-Datum
+        window.markDone = async (snapshotId, event) => {
             if (event) { event.preventDefault(); event.stopPropagation(); }
-            const project = allProjects.find(p => p.id === id);
-            if (!project) return;
-            if (project.erledigt) {
-                const undo = confirm(`"${id}" erledigt von: ${project.erledigtVon}\n\nAls OFFEN markieren?`);
-                if (!undo) return;
-                try {
-                    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'projekte', id), {
-                        erledigt: false, erledigtVon: null, erledigtAm: null
-                    });
-                    showStatus(`"${id}" WIEDER ALS OFFEN MARKIERT`, "info");
-                } catch(e) { showStatus("FEHLER BEIM AKTUALISIEREN", "error"); }
-                return;
-            }
-            showDoneModal(id);
+            // snapshotId = "projektId__datum" z.B. "MUSTER__2026-06-01T08:00"
+            const snap = allSnapshots.find(s => s.id === snapshotId);
+            if (!snap) return;
+            const undo = confirm(`Auftrag "${snap.projektId}" erledigt von: ${snap.erledigtVon}\n\nEintrag aus Kalender entfernen?`);
+            if (!undo) return;
+            try {
+                await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'kalender_snapshots', snapshotId));
+                showStatus('EINTRAG ENTFERNT', "info");
+            } catch(e) { showStatus("FEHLER", "error"); }
         };
 
-        function showDoneModal(projectId) {
+        window.markDoneProject = async (projektId, datum, event) => {
+            if (event) { event.preventDefault(); event.stopPropagation(); }
+            showDoneModal(projektId, datum);
+        };
+
+        function showDoneModal(projektId, datum) {
             const overlay = document.createElement('div');
             overlay.id = 'done-modal-overlay';
             overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.75);backdrop-filter:blur(8px);z-index:9999;display:flex;align-items:center;justify-content:center;padding:1rem;';
+            const escapedDatum = datum.replace(/"/g, '&quot;');
             overlay.innerHTML = `
                 <div style="background:#fff;border-radius:1.5rem;padding:2rem;width:100%;max-width:380px;box-shadow:0 25px 60px rgba(0,0,0,0.3);">
                     <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:1.25rem;">
                         <div style="width:44px;height:44px;background:#16a34a;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:1.3rem;flex-shrink:0;">✅</div>
                         <div>
-                            <div style="font-weight:900;font-size:14px;text-transform:uppercase;letter-spacing:-0.01em;color:#0f172a;font-family:Inter,sans-serif;">Auftrag erledigt</div>
-                            <div style="font-size:10px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:0.05em;font-family:Inter,sans-serif;">${projectId}</div>
+                            <div style="font-weight:900;font-size:14px;text-transform:uppercase;color:#0f172a;font-family:Inter,sans-serif;">Auftrag erledigt</div>
+                            <div style="font-size:10px;font-weight:700;color:#64748b;text-transform:uppercase;font-family:Inter,sans-serif;">${projektId}</div>
                         </div>
                     </div>
                     <label style="font-size:9px;font-weight:900;text-transform:uppercase;color:#94a3b8;letter-spacing:0.1em;display:block;margin-bottom:0.5rem;font-family:Inter,sans-serif;">Dein Name (Pflicht)</label>
@@ -490,11 +502,11 @@
                         onfocus="this.style.borderColor='#16a34a'" onblur="this.style.borderColor='#e2e8f0'">
                     <div style="display:flex;gap:0.75rem;margin-top:1.25rem;">
                         <button onclick="closeDoneModal()"
-                            style="flex:1;padding:0.875rem;border-radius:0.875rem;border:2px solid #e2e8f0;background:white;font-weight:900;font-size:11px;text-transform:uppercase;letter-spacing:0.05em;cursor:pointer;color:#64748b;font-family:Inter,sans-serif;">
+                            style="flex:1;padding:0.875rem;border-radius:0.875rem;border:2px solid #e2e8f0;background:white;font-weight:900;font-size:11px;text-transform:uppercase;cursor:pointer;color:#64748b;font-family:Inter,sans-serif;">
                             Abbrechen
                         </button>
-                        <button onclick="confirmDone('${projectId}')"
-                            style="flex:1;padding:0.875rem;border-radius:0.875rem;border:none;background:#16a34a;color:white;font-weight:900;font-size:11px;text-transform:uppercase;letter-spacing:0.05em;cursor:pointer;box-shadow:0 4px 15px rgba(22,163,74,0.4);font-family:Inter,sans-serif;">
+                        <button onclick="confirmDone('${projektId}', '${escapedDatum}')"
+                            style="flex:1;padding:0.875rem;border-radius:0.875rem;border:none;background:#16a34a;color:white;font-weight:900;font-size:11px;text-transform:uppercase;cursor:pointer;box-shadow:0 4px 15px rgba(22,163,74,0.4);font-family:Inter,sans-serif;">
                             ✓ Bestätigen
                         </button>
                     </div>
@@ -503,13 +515,13 @@
             document.body.appendChild(overlay);
             setTimeout(() => document.getElementById('done-name-input')?.focus(), 100);
             overlay.querySelector('#done-name-input').addEventListener('keydown', e => {
-                if (e.key === 'Enter') confirmDone(projectId);
+                if (e.key === 'Enter') confirmDone(projektId, datum);
             });
         }
 
         window.closeDoneModal = () => { document.getElementById('done-modal-overlay')?.remove(); };
 
-        window.confirmDone = async (projectId) => {
+        window.confirmDone = async (projektId, datum) => {
             const nameInput = document.getElementById('done-name-input');
             const name = nameInput?.value.trim();
             if (!name) {
@@ -521,13 +533,33 @@
             closeDoneModal();
             showStatus("WIRD GESPEICHERT...", "info");
             try {
-                await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'projekte', projectId), {
-                    erledigt: true,
+                // Snapshot-ID = projektId + Datum (eindeutig pro Termin)
+                const snapshotId = projektId + '__' + datum.replace(/[:.]/g, '-');
+                // Bisherige Anzahl Einsätze für dieses Projekt zählen
+                const prevSnaps = allSnapshots.filter(s => s.projektId === projektId);
+                const einsatzNr = prevSnaps.length + 1;
+
+                // Projekt-Daten für Snapshot holen
+                const project = allProjects.find(p => p.id === projektId) || {};
+
+                await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'kalender_snapshots', snapshotId), {
+                    projektId,
+                    datum,
+                    // Vollständige Projekt-Infos einfrieren
+                    adresse:         project.adresse || '',
+                    kunde:           project.kunde || '',
+                    verantwortlicher: project.verantwortlicher || '',
+                    auftragsart:     project.auftragsart || '',
+                    pl_intern:       project.pl_intern || '',
+                    tel_bauleitung:  project.tel_bauleitung || '',
+                    tel_monteur:     project.tel_monteur || '',
                     erledigtVon: name.toUpperCase(),
-                    erledigtAm: new Date().toISOString()
+                    erledigtAm: new Date().toISOString(),
+                    einsatzNr,
+                    createdAt: new Date().toISOString()
                 });
-                showStatus('ERLEDIGT VON ' + name.toUpperCase(), "success");
-            } catch(e) { showStatus("FEHLER BEIM SPEICHERN", "error"); }
+                showStatus('✅ ERLEDIGT VON ' + name.toUpperCase() + ' · EINSATZ #' + einsatzNr, "success");
+            } catch(e) { console.error(e); showStatus("FEHLER BEIM SPEICHERN", "error"); }
         };
 
         function renderWorkWeek() {
@@ -571,26 +603,55 @@
                         empty.innerText = "Keine Termine";
                         dayCard.appendChild(empty);
                     } else {
+                        // Aktive Projekte an diesem Tag
                         dayProjects.forEach(p => {
                             const timeParts = (p.datum || '').split('T');
                             const timeStr = timeParts.length > 1 ? timeParts[1].substring(0,5) : '';
-                            const isDone = p.erledigt === true;
+                            // Anzahl bisheriger Einsätze (Folgetermin-Kennzeichnung)
+                            const prevDone = allSnapshots.filter(s => s.projektId === p.id);
+                            const folgennr = prevDone.length;
                             const entry = document.createElement('div');
-                            entry.className = `px-3 py-2.5 border-t border-slate-100 flex items-center gap-2 ${isDone ? 'bg-green-50' : 'bg-white active:bg-blue-50'}`;
+                            entry.className = "px-3 py-2.5 border-t border-slate-100 flex items-center gap-2 bg-white active:bg-blue-50";
                             entry.innerHTML = `
-                                <div class="w-2 h-2 rounded-full flex-shrink-0 ${isDone ? 'bg-green-500' : 'bg-blue-500'}"></div>
+                                <div class="w-2 h-2 rounded-full bg-blue-500 flex-shrink-0"></div>
                                 <div class="flex-1 min-w-0" onclick="loadProjectData('${p.id}')">
-                                    <div class="font-black text-[12px] uppercase italic truncate ${isDone ? 'text-green-700 line-through' : 'text-blue-600'}">${p.id}</div>
-                                    <div class="text-[10px] font-bold truncate ${isDone ? 'text-green-600' : 'text-slate-600'}">${p.adresse || '–'}</div>
-                                    ${isDone ? `<div class="text-[9px] font-black text-green-600 uppercase">✅ ${p.erledigtVon}</div>` : ''}
+                                    <div class="flex items-center gap-1.5">
+                                        <div class="font-black text-[12px] uppercase italic truncate text-blue-600">${p.id}</div>
+                                        ${folgennr > 0 ? `<span style="background:#f59e0b;color:white;font-size:9px;font-weight:900;padding:1px 6px;border-radius:999px;flex-shrink:0;">#${folgennr+1}</span>` : ''}
+                                    </div>
+                                    <div class="text-[10px] font-bold truncate text-slate-600">${p.adresse || '–'}</div>
                                 </div>
                                 <div class="flex items-center gap-1.5 flex-shrink-0">
                                     <span class="text-[9px] font-black text-slate-400">${timeStr}</span>
-                                    <button onclick="markDone('${p.id}', event)"
-                                        style="min-width:36px;height:36px;border-radius:10px;border:none;cursor:pointer;font-size:11px;font-weight:900;text-transform:uppercase;font-family:Inter,sans-serif;display:flex;align-items:center;justify-content:center;${isDone ? 'background:#dcfce7;color:#16a34a;' : 'background:#f0f9ff;color:#2563eb;'}"
-                                        title="${isDone ? 'Als offen markieren' : 'Als erledigt markieren'}">
-                                        ${isDone ? '↩' : '✓'}
-                                    </button>
+                                    <button onclick="markDoneProject('${p.id}', '${p.datum}', event)"
+                                        style="min-width:36px;height:36px;border-radius:10px;border:none;cursor:pointer;font-size:14px;font-weight:900;font-family:Inter,sans-serif;display:flex;align-items:center;justify-content:center;background:#f0f9ff;color:#2563eb;"
+                                        title="Als erledigt markieren">✓</button>
+                                </div>
+                            `;
+                            dayCard.appendChild(entry);
+                        });
+                        // Erledigte Snapshots an diesem Tag
+                        allSnapshots.filter(s => s.datum && s.datum.split('T')[0] === dayStr).forEach(s => {
+                            const timeParts = (s.datum || '').split('T');
+                            const timeStr = timeParts.length > 1 ? timeParts[1].substring(0,5) : '';
+                            const snapshotId = s.projektId + '__' + s.datum.replace(/[:.]/g, '-');
+                            const entry = document.createElement('div');
+                            entry.className = "px-3 py-2.5 border-t border-green-100 flex items-center gap-2 bg-green-50";
+                            entry.innerHTML = `
+                                <div class="w-2 h-2 rounded-full bg-green-500 flex-shrink-0"></div>
+                                <div class="flex-1 min-w-0">
+                                    <div class="flex items-center gap-1.5">
+                                        <div class="font-black text-[12px] uppercase italic truncate text-green-700 line-through">${s.projektId}</div>
+                                        <span style="background:#16a34a;color:white;font-size:9px;font-weight:900;padding:1px 6px;border-radius:999px;flex-shrink:0;">#${s.einsatzNr}</span>
+                                    </div>
+                                    <div class="text-[10px] font-bold truncate text-green-700">${s.adresse || '–'}</div>
+                                    <div class="text-[9px] font-black text-green-600 uppercase">✅ ${s.erledigtVon}${s.kunde ? ' · ' + s.kunde : ''}</div>
+                                </div>
+                                <div class="flex items-center gap-1.5 flex-shrink-0">
+                                    <span class="text-[9px] font-black text-slate-400">${timeStr}</span>
+                                    <button onclick="markDone('${snapshotId}', event)"
+                                        style="min-width:36px;height:36px;border-radius:10px;border:none;cursor:pointer;font-size:14px;font-weight:900;font-family:Inter,sans-serif;display:flex;align-items:center;justify-content:center;background:#dcfce7;color:#16a34a;"
+                                        title="Eintrag entfernen">↩</button>
                                 </div>
                             `;
                             dayCard.appendChild(entry);
@@ -622,6 +683,7 @@
                         slot.className = "h-[80px] border-t border-slate-100 w-full";
                         dayCol.appendChild(slot);
                     }
+                    // Aktive Projekte
                     allProjects.filter(p => p.datum && p.datum.split('T')[0] === dayStr).forEach(p => {
                         const timeParts = p.datum.split('T');
                         if (timeParts.length < 2) return;
@@ -629,30 +691,64 @@
                         const hNum = parseInt(hours); const mNum = parseInt(minutes);
                         if(hNum >= 7 && hNum < 20) {
                             const topPos = ((hNum - 7) * 80) + (mNum / 60 * 80) + 48;
-                            const isDone = p.erledigt === true;
+                            // Anzahl bisheriger Einsätze
+                            const prevDone = allSnapshots.filter(s => s.projektId === p.id);
+                            const folgennr = prevDone.length;
                             const entry = document.createElement('div');
-                            entry.className = `absolute left-1 right-1 p-2 rounded-xl shadow-lg z-20 overflow-hidden flex flex-col justify-between transition-all hover:shadow-xl ${isDone ? 'bg-green-50 border-2 border-green-400' : 'bg-white border-2 border-blue-500'}`;
+                            entry.className = "absolute left-1 right-1 bg-white border-2 border-blue-500 p-2 rounded-xl shadow-lg z-20 overflow-hidden flex flex-col justify-between hover:shadow-xl transition-all";
                             entry.style.top = `${topPos}px`;
                             entry.style.height = "76px";
                             entry.innerHTML = `
-                                <div class="flex justify-between items-start gap-1">
-                                    <span class="text-[10px] font-black truncate uppercase italic ${isDone ? 'text-green-700 line-through' : 'text-blue-600'}">${p.id}</span>
+                                <div class="flex justify-between items-start gap-1 cursor-pointer">
+                                    <div class="flex items-center gap-1 min-w-0">
+                                        <span class="text-[10px] font-black truncate uppercase italic text-blue-600">${p.id}</span>
+                                        ${folgennr > 0 ? `<span style="background:#f59e0b;color:white;font-size:8px;font-weight:900;padding:1px 5px;border-radius:999px;flex-shrink:0;">#${folgennr+1}</span>` : ''}
+                                    </div>
                                     <span class="text-[8px] font-black text-slate-400 flex-shrink-0">${hours}:${minutes}</span>
                                 </div>
-                                <div class="text-[9px] font-bold truncate ${isDone ? 'text-green-600' : 'text-slate-700'}">${p.adresse || '...'}</div>
-                                <div class="flex items-center justify-between gap-1">
-                                    ${isDone
-                                        ? `<span class="text-[8px] font-black text-green-600 uppercase truncate">✅ ${p.erledigtVon}</span>`
-                                        : `<span class="text-[8px] text-slate-400 truncate">&nbsp;</span>`
-                                    }
-                                    <button onclick="markDone('${p.id}', event)"
-                                        style="flex-shrink:0;padding:2px 6px;border-radius:6px;border:none;cursor:pointer;font-size:9px;font-weight:900;text-transform:uppercase;font-family:Inter,sans-serif;${isDone ? 'background:#dcfce7;color:#16a34a;' : 'background:#eff6ff;color:#2563eb;'}"
-                                        title="${isDone ? 'Rückgängig' : 'Als erledigt markieren'}">
-                                        ${isDone ? '↩ Offen' : '✓ Erledigt'}
+                                <div class="text-[9px] font-bold truncate text-slate-700 cursor-pointer">${p.adresse || '...'}</div>
+                                <div class="flex items-center justify-end">
+                                    <button onclick="markDoneProject('${p.id}', '${p.datum}', event)"
+                                        style="padding:2px 7px;border-radius:6px;border:none;cursor:pointer;font-size:9px;font-weight:900;text-transform:uppercase;font-family:Inter,sans-serif;background:#eff6ff;color:#2563eb;">
+                                        ✓ Erledigt
                                     </button>
                                 </div>
                             `;
-                            entry.querySelector('div:first-child').addEventListener('click', () => loadProjectData(p.id));
+                            entry.addEventListener('click', (e) => { if (!e.target.closest('button')) loadProjectData(p.id); });
+                            dayCol.appendChild(entry);
+                        }
+                    });
+                    // Erledigte Snapshots
+                    allSnapshots.filter(s => s.datum && s.datum.split('T')[0] === dayStr).forEach(s => {
+                        const timeParts = s.datum.split('T');
+                        if (timeParts.length < 2) return;
+                        const [hours, minutes] = timeParts[1].split(':');
+                        const hNum = parseInt(hours); const mNum = parseInt(minutes);
+                        if(hNum >= 7 && hNum < 20) {
+                            const topPos = ((hNum - 7) * 80) + (mNum / 60 * 80) + 48;
+                            const snapshotId = s.projektId + '__' + s.datum.replace(/[:.]/g, '-');
+                            const entry = document.createElement('div');
+                            entry.className = "absolute left-1 right-1 bg-green-50 border-2 border-green-400 p-2 rounded-xl shadow-lg z-20 overflow-hidden flex flex-col justify-between hover:shadow-xl transition-all";
+                            entry.style.top = `${topPos}px`;
+                            entry.style.minHeight = "76px";
+                            entry.style.height = "auto";
+                            entry.innerHTML = `
+                                <div class="flex justify-between items-start gap-1">
+                                    <div class="flex items-center gap-1 min-w-0">
+                                        <span class="text-[10px] font-black truncate uppercase italic text-green-700 line-through">${s.projektId}</span>
+                                        <span style="background:#16a34a;color:white;font-size:8px;font-weight:900;padding:1px 5px;border-radius:999px;flex-shrink:0;">#${s.einsatzNr}</span>
+                                    </div>
+                                    <span class="text-[8px] font-black text-slate-400 flex-shrink-0">${hours}:${minutes}</span>
+                                </div>
+                                <div class="text-[8px] font-bold text-green-700 truncate">${s.adresse || s.kunde || '–'}</div>
+                                <div class="text-[8px] font-black text-green-600 uppercase truncate">✅ ${s.erledigtVon}${s.kunde ? ' · ' + s.kunde : ''}</div>
+                                <div class="flex items-center justify-end">
+                                    <button onclick="markDone('${snapshotId}', event)"
+                                        style="padding:2px 7px;border-radius:6px;border:none;cursor:pointer;font-size:9px;font-weight:900;text-transform:uppercase;font-family:Inter,sans-serif;background:#dcfce7;color:#16a34a;">
+                                        ↩ Entfernen
+                                    </button>
+                                </div>
+                            `;
                             dayCol.appendChild(entry);
                         }
                     });
