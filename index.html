@@ -612,6 +612,7 @@
                             const folgennr = prevDone.length;
                             const entry = document.createElement('div');
                             entry.className = "px-3 py-2.5 border-t border-slate-100 flex items-center gap-2 bg-white active:bg-blue-50";
+                            entry.dataset.label = p.id;
                             entry.innerHTML = `
                                 <div class="w-2 h-2 rounded-full bg-blue-500 flex-shrink-0"></div>
                                 <div class="flex-1 min-w-0" onclick="loadProjectData('${p.id}')">
@@ -637,6 +638,7 @@
                             const snapshotId = s.projektId + '__' + s.datum.replace(/[:.]/g, '-');
                             const entry = document.createElement('div');
                             entry.className = "px-3 py-2.5 border-t border-green-100 flex items-center gap-2 bg-green-50";
+                            entry.dataset.label = s.projektId;
                             entry.innerHTML = `
                                 <div class="w-2 h-2 rounded-full bg-green-500 flex-shrink-0"></div>
                                 <div class="flex-1 min-w-0">
@@ -698,6 +700,7 @@
                             entry.className = "absolute left-1 right-1 bg-white border-2 border-blue-500 p-2 rounded-xl shadow-lg z-20 overflow-hidden flex flex-col justify-between hover:shadow-xl transition-all";
                             entry.style.top = `${topPos}px`;
                             entry.style.height = "76px";
+                            entry.dataset.label = p.id;
                             entry.innerHTML = `
                                 <div class="flex justify-between items-start gap-1 cursor-pointer">
                                     <div class="flex items-center gap-1 min-w-0">
@@ -732,6 +735,7 @@
                             entry.style.top = `${topPos}px`;
                             entry.style.minHeight = "76px";
                             entry.style.height = "auto";
+                            entry.dataset.label = s.projektId;
                             entry.innerHTML = `
                                 <div class="flex justify-between items-start gap-1">
                                     <div class="flex items-center gap-1 min-w-0">
@@ -775,6 +779,155 @@
                 label.classList.add('border-slate-100', 'text-slate-900');
             }
         }
+
+        // ── Kalender-Suche ──────────────────────────────────────────
+        window.handleKalenderSearch = (val) => {
+            const resultsBox = document.getElementById('kalender-search-results');
+            const clearBtn  = document.getElementById('kalender-search-clear');
+            const q = val.trim().toLowerCase();
+
+            if (clearBtn) clearBtn.classList.toggle('hidden', q.length === 0);
+
+            if (q.length < 2) {
+                resultsBox.classList.add('hidden');
+                resultsBox.innerHTML = '';
+                return;
+            }
+
+            // Alle aktiven Projekte + Snapshots durchsuchen
+            const hits = [];
+
+            allProjects.forEach(p => {
+                const score =
+                    (p.id     || '').toLowerCase().includes(q) ||
+                    (p.adresse|| '').toLowerCase().includes(q) ||
+                    (p.kunde  || '').toLowerCase().includes(q) ||
+                    (p.verantwortlicher || '').toLowerCase().includes(q);
+                if (score && p.datum) hits.push({
+                    type: 'projekt',
+                    id: p.id,
+                    label: p.id,
+                    sub: p.adresse || '–',
+                    kunde: p.kunde || '',
+                    datum: p.datum,
+                    erledigt: false
+                });
+            });
+
+            allSnapshots.forEach(s => {
+                const score =
+                    (s.projektId || '').toLowerCase().includes(q) ||
+                    (s.adresse   || '').toLowerCase().includes(q) ||
+                    (s.kunde     || '').toLowerCase().includes(q);
+                if (score && s.datum) hits.push({
+                    type: 'snapshot',
+                    id: s.id,
+                    label: s.projektId,
+                    sub: s.adresse || '–',
+                    kunde: s.kunde || '',
+                    datum: s.datum,
+                    erledigt: true,
+                    erledigtVon: s.erledigtVon,
+                    einsatzNr: s.einsatzNr
+                });
+            });
+
+            // Sortiert nach Datum
+            hits.sort((a, b) => new Date(a.datum) - new Date(b.datum));
+
+            if (hits.length === 0) {
+                resultsBox.innerHTML = '<div style="padding:1.25rem 1rem;font-size:11px;font-weight:900;text-transform:uppercase;color:#94a3b8;text-align:center;font-family:Inter,sans-serif;">Keine Einträge gefunden</div>';
+                resultsBox.classList.remove('hidden');
+                return;
+            }
+
+            resultsBox.innerHTML = '';
+            hits.forEach((hit, i) => {
+                const d = new Date(hit.datum);
+                const dateStr = d.toLocaleDateString('de-DE', { weekday:'short', day:'2-digit', month:'2-digit', year:'numeric' });
+                const timeStr = hit.datum.includes('T') ? hit.datum.split('T')[1].substring(0,5) : '';
+
+                const item = document.createElement('div');
+                item.style.cssText = `padding:0.75rem 1rem;cursor:pointer;border-bottom:1px solid #f1f5f9;display:flex;align-items:center;gap:0.75rem;font-family:Inter,sans-serif;${i === 0 ? '' : ''}`;
+
+                item.innerHTML = `
+                    <div style="width:36px;height:36px;border-radius:10px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:1rem;
+                        ${hit.erledigt ? 'background:#dcfce7;' : 'background:#eff6ff;'}">
+                        ${hit.erledigt ? '✅' : '📋'}
+                    </div>
+                    <div style="flex:1;min-width:0;">
+                        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+                            <span style="font-size:12px;font-weight:900;text-transform:uppercase;font-style:italic;
+                                ${hit.erledigt ? 'color:#15803d;text-decoration:line-through;' : 'color:#2563eb;'}">${hit.label}</span>
+                            ${hit.erledigt ? `<span style="background:#16a34a;color:white;font-size:8px;font-weight:900;padding:1px 5px;border-radius:999px;">#${hit.einsatzNr}</span>` : ''}
+                            ${hit.kunde ? `<span style="font-size:9px;font-weight:700;color:#64748b;text-transform:uppercase;">${hit.kunde}</span>` : ''}
+                        </div>
+                        <div style="font-size:10px;font-weight:700;color:#475569;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${hit.sub}</div>
+                        <div style="font-size:9px;font-weight:900;color:#94a3b8;text-transform:uppercase;margin-top:1px;">${dateStr}${timeStr ? ' · ' + timeStr : ''}
+                            ${hit.erledigt ? ' · ✅ ' + hit.erledigtVon : ''}
+                        </div>
+                    </div>
+                    <div style="font-size:1.2rem;color:#cbd5e1;flex-shrink:0;">→</div>
+                `;
+
+                item.addEventListener('mouseover',  () => item.style.background = '#f8fafc');
+                item.addEventListener('mouseleave', () => item.style.background = '');
+                item.addEventListener('click', () => jumpToCalendarEntry(hit.datum, hit.label));
+                resultsBox.appendChild(item);
+            });
+
+            resultsBox.classList.remove('hidden');
+        };
+
+        window.clearKalenderSearch = () => {
+            const input = document.getElementById('kalender-search');
+            const resultsBox = document.getElementById('kalender-search-results');
+            const clearBtn = document.getElementById('kalender-search-clear');
+            if (input) input.value = '';
+            if (resultsBox) { resultsBox.innerHTML = ''; resultsBox.classList.add('hidden'); }
+            if (clearBtn) clearBtn.classList.add('hidden');
+        };
+
+        // Springt zur richtigen Woche + hebt den Eintrag hervor
+        function jumpToCalendarEntry(datum, label) {
+            clearKalenderSearch();
+
+            // Woche berechnen und anzeigen
+            const targetDate = new Date(datum);
+            currentWeekStart = getMonday(targetDate);
+            renderWorkWeek();
+
+            // Kurz warten bis gerendert, dann highlighten + scrollen
+            setTimeout(() => {
+                // Alle Einträge im Kalender finden die diesen Label enthalten
+                const allEntries = document.querySelectorAll('#work-week-grid [data-label]');
+                let found = null;
+                allEntries.forEach(el => {
+                    if (el.dataset.label === label) found = el;
+                });
+
+                if (found) {
+                    found.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    // Puls-Animation
+                    found.style.transition = 'box-shadow 0.2s, transform 0.2s';
+                    found.style.boxShadow = '0 0 0 4px #f59e0b, 0 8px 30px rgba(245,158,11,0.4)';
+                    found.style.transform = 'scale(1.04)';
+                    setTimeout(() => {
+                        found.style.boxShadow = '';
+                        found.style.transform = '';
+                    }, 2000);
+                }
+            }, 150);
+        }
+
+        // Suche schliessen bei Klick ausserhalb
+        document.addEventListener('click', (e) => {
+            const box = document.getElementById('kalender-search-results');
+            const input = document.getElementById('kalender-search');
+            if (box && !box.contains(e.target) && e.target !== input) {
+                box.classList.add('hidden');
+            }
+        });
 
         window.switchTab = switchTab;
         window.changeWeek = (o) => {
@@ -1109,12 +1262,25 @@
         <!-- Calendar Tab -->
         <div id="calendar-tab" class="tab-content hidden">
             <div class="bg-card overflow-hidden border border-slate-200">
-                <div class="flex justify-between items-center p-4 md:p-8 bg-slate-50 border-b border-slate-200">
+                <!-- Kalender Header: Woche + Navigation -->
+                <div class="flex justify-between items-center p-4 md:p-6 bg-slate-50 border-b border-slate-200">
                     <h2 id="week-label" class="text-base md:text-xl font-black italic text-slate-900 tracking-tighter uppercase">KALENDER</h2>
                     <div class="flex gap-2">
                         <button onclick="changeWeek(-1)" class="w-11 h-11 bg-white border border-slate-200 rounded-xl text-slate-900 font-bold hover:bg-blue-600 hover:text-white transition-all shadow-sm text-lg">←</button>
                         <button onclick="changeWeek(1)" class="w-11 h-11 bg-white border border-slate-200 rounded-xl text-slate-900 font-bold hover:bg-blue-600 hover:text-white transition-all shadow-sm text-lg">→</button>
                     </div>
+                </div>
+                <!-- Suchleiste -->
+                <div class="relative p-3 md:p-4 border-b border-slate-200 bg-white">
+                    <div class="relative">
+                        <span class="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 text-base pointer-events-none">🔍</span>
+                        <input type="text" id="kalender-search" oninput="handleKalenderSearch(this.value)" placeholder="ADRESSE, OBJEKT ODER KUNDE SUCHEN..."
+                            style="font-size:16px;"
+                            class="w-full pl-10 pr-10 py-3 bg-slate-50 border-2 border-slate-200 rounded-2xl text-[12px] font-black uppercase italic text-slate-900 outline-none focus:border-blue-500 focus:bg-white transition-all placeholder:text-slate-300 placeholder:not-italic">
+                        <button id="kalender-search-clear" onclick="clearKalenderSearch()" class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 text-xl hidden">×</button>
+                    </div>
+                    <!-- Suchergebnisse Dropdown -->
+                    <div id="kalender-search-results" class="hidden absolute left-3 right-3 top-full mt-1 bg-white rounded-2xl border border-slate-200 shadow-2xl z-[200] max-h-72 overflow-y-auto"></div>
                 </div>
                 <!-- Mobile: vertical day list | Desktop: time grid -->
                 <div id="work-week-grid" class="p-3 md:p-0 md:overflow-x-auto md:min-w-[1000px] bg-white"></div>
