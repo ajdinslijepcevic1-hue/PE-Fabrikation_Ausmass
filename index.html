@@ -995,14 +995,16 @@
                             const timeStr = timeParts.length > 1 ? timeParts[1].substring(0,5) : '';
                             const prevDone = allSnapshots.filter(s => s.projektId === p.id);
                             const folgennr = prevDone.length;
+                            const isService = (p.auftragsart === 'Service'); // NEU: Service-Aufträge farblich abheben
                             const entry = document.createElement('div');
-                            entry.className = "px-3 py-2.5 border-t border-slate-100 flex items-center gap-2 bg-white active:bg-blue-50";
+                            entry.className = `px-3 py-2.5 border-t flex items-center gap-2 ${isService ? 'border-violet-100 bg-violet-50 active:bg-violet-100' : 'border-slate-100 bg-white active:bg-blue-50'}`;
                             entry.dataset.label = p.id;
                             entry.innerHTML = `
-                                <div class="w-2 h-2 rounded-full bg-blue-500 flex-shrink-0"></div>
+                                <div class="w-2 h-2 rounded-full ${isService ? 'bg-violet-500' : 'bg-blue-500'} flex-shrink-0"></div>
                                 <div class="flex-1 min-w-0" onclick="loadProjectData('${p.id}')">
                                     <div class="flex items-center gap-1.5">
-                                        <div class="font-black text-[12px] uppercase italic truncate text-blue-600">${p.id}</div>
+                                        <div class="font-black text-[12px] uppercase italic truncate ${isService ? 'text-violet-700' : 'text-blue-600'}">${p.id}</div>
+                                        ${isService ? `<span style="background:#7c3aed;color:white;font-size:8px;font-weight:900;padding:1px 6px;border-radius:999px;flex-shrink:0;letter-spacing:0.5px;">SERVICE</span>` : ''}
                                         ${folgennr > 0 ? `<span style="background:#f59e0b;color:white;font-size:9px;font-weight:900;padding:1px 6px;border-radius:999px;flex-shrink:0;">#${folgennr+1}</span>` : ''}
                                     </div>
                                     <div class="text-[10px] font-bold truncate text-slate-600">${p.adresse || '–'}</div>
@@ -1010,7 +1012,7 @@
                                 <div class="flex items-center gap-1.5 flex-shrink-0">
                                     <span class="text-[9px] font-black text-slate-400">${timeStr}</span>
                                     <button onclick="markDoneProject('${p.id}', '${p.datum}', event)"
-                                        style="min-width:36px;height:36px;border-radius:10px;border:none;cursor:pointer;font-size:14px;font-weight:900;font-family:Inter,sans-serif;display:flex;align-items:center;justify-content:center;background:#f0f9ff;color:#2563eb;"
+                                        style="min-width:36px;height:36px;border-radius:10px;border:none;cursor:pointer;font-size:14px;font-weight:900;font-family:Inter,sans-serif;display:flex;align-items:center;justify-content:center;${isService ? 'background:#f5f3ff;color:#7c3aed;' : 'background:#f0f9ff;color:#2563eb;'}"
                                         title="Als erledigt markieren">✓</button>
                                 </div>
                             `;
@@ -1078,15 +1080,17 @@
                             const topPos = ((hNum - 7) * 80) + (mNum / 60 * 80) + 48;
                             const prevDone = allSnapshots.filter(s => s.projektId === p.id);
                             const folgennr = prevDone.length;
+                            const isService = (p.auftragsart === 'Service'); // NEU: Service-Aufträge farblich abheben
                             const entry = document.createElement('div');
-                            entry.className = "absolute left-1 right-1 bg-white border-2 border-blue-500 p-2 rounded-xl shadow-lg z-20 overflow-hidden flex flex-col justify-between hover:shadow-xl transition-all";
+                            entry.className = `absolute left-1 right-1 p-2 rounded-xl shadow-lg z-20 overflow-hidden flex flex-col justify-between hover:shadow-xl transition-all border-2 ${isService ? 'bg-violet-50 border-violet-500' : 'bg-white border-blue-500'}`;
                             entry.style.top = `${topPos}px`;
                             entry.style.height = "76px";
                             entry.dataset.label = p.id;
                             entry.innerHTML = `
                                 <div class="flex justify-between items-start gap-1 cursor-pointer">
                                     <div class="flex items-center gap-1 min-w-0">
-                                        <span class="text-[10px] font-black truncate uppercase italic text-blue-600">${p.id}</span>
+                                        <span class="text-[10px] font-black truncate uppercase italic ${isService ? 'text-violet-700' : 'text-blue-600'}">${p.id}</span>
+                                        ${isService ? `<span style="background:#7c3aed;color:white;font-size:7px;font-weight:900;padding:1px 4px;border-radius:999px;flex-shrink:0;letter-spacing:0.3px;">SERVICE</span>` : ''}
                                         ${folgennr > 0 ? `<span style="background:#f59e0b;color:white;font-size:8px;font-weight:900;padding:1px 5px;border-radius:999px;flex-shrink:0;">#${folgennr+1}</span>` : ''}
                                     </div>
                                     <span class="text-[8px] font-black text-slate-400 flex-shrink-0">${hours}:${minutes}</span>
@@ -1094,7 +1098,7 @@
                                 <div class="text-[9px] font-bold truncate text-slate-700 cursor-pointer">${p.adresse || '...'}</div>
                                 <div class="flex items-center justify-end">
                                     <button onclick="markDoneProject('${p.id}', '${p.datum}', event)"
-                                        style="padding:2px 7px;border-radius:6px;border:none;cursor:pointer;font-size:9px;font-weight:900;text-transform:uppercase;font-family:Inter,sans-serif;background:#eff6ff;color:#2563eb;">
+                                        style="padding:2px 7px;border-radius:6px;border:none;cursor:pointer;font-size:9px;font-weight:900;text-transform:uppercase;font-family:Inter,sans-serif;${isService ? 'background:#f5f3ff;color:#7c3aed;' : 'background:#eff6ff;color:#2563eb;'}">
                                         ✓ Erledigt
                                     </button>
                                 </div>
