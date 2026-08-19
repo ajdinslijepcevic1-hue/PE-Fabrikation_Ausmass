@@ -22,7 +22,18 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot, updateDoc, getDocs, deleteDoc, writeBatch, query, orderBy } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+
+        // ============================================================
+        // ZUGANGSCODE — einziger Code für diese App: 3161
+        // Erst nach korrekter Eingabe meldet sich die App bei Firebase an.
+        // Es gibt hier bewusst nur diesen einen Code (keine Gruppen-PINs).
+        // ============================================================
+        window.AUSMASS_GATE = {
+            pin: "3161",
+            email: "zugang-ausmass@pe-intern.local",
+            password: "PE-Zugang-3161a"
+        };
 
         const firebaseConfig = {
             apiKey: "AIzaSyDZdCAoXdP0QfKJdnxBWzZ5vo4trhzsa74",
@@ -46,8 +57,8 @@
         let currentFiles = [];
         let loadedProjectId = null; // NEU: ID des aktuell geladenen Projekts (für Umbenennen)
         const CHUNK_SIZE = 700000;
-        const ACTION_CODE = "3161";
         const MAX_AGE_DAYS = 50;
+        const APPOINTMENT_DURATION_MS = 60 * 60 * 1000; // Termine sind fix 1 Stunde lang
 
         const ABWESENHEIT_COLORS = {
             'Ferien':        { bg: '#fef9c3', border: '#fbbf24', text: '#92400e', dot: '#f59e0b' },
@@ -56,24 +67,67 @@
             'Weiterbildung': { bg: '#ede9fe', border: '#a78bfa', text: '#4c1d95', dot: '#8b5cf6' },
         };
 
-        async function initAuth() {
+        // ── ZUGANGSCODE-GATE ──
+        let gatePin = '';
+        const renderGateDots = () => {
+            const dots = document.querySelectorAll('#gate-dots .gate-dot');
+            dots.forEach((d, i) => d.classList.toggle('filled', i < gatePin.length));
+        };
+        const setGateStatus = (msg, cls) => {
+            const el = document.getElementById('gate-status');
+            if (!el) return;
+            el.textContent = msg;
+            el.className = 'gate-status' + (cls ? ' ' + cls : '');
+        };
+        const submitGate = async () => {
+            const gate = window.AUSMASS_GATE;
+            if (gatePin !== gate.pin) {
+                setGateStatus('Falscher Code', 'err');
+                setTimeout(() => { gatePin = ''; renderGateDots(); setGateStatus('\u00a0'); }, 900);
+                return;
+            }
+            setGateStatus('Prüfe...', '');
             try {
                 await setPersistence(auth, browserLocalPersistence);
-                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                    try { await signInWithCustomToken(auth, __initial_auth_token); }
-                    catch (e) { await signInAnonymously(auth); }
-                } else {
-                    await signInAnonymously(auth);
-                }
-            } catch (e) { showStatus("AUTH ERROR", "error"); }
-        }
+                await signInWithEmailAndPassword(auth, gate.email, gate.password);
+                document.getElementById('gate-screen').style.display = 'none';
+            } catch (e) {
+                console.error('Zugangscode-Anmeldung fehlgeschlagen:', e.message);
+                setGateStatus('Zugang fehlgeschlagen', 'err');
+                setTimeout(() => { gatePin = ''; renderGateDots(); setGateStatus('\u00a0'); }, 1200);
+            }
+        };
+        window.addEventListener('DOMContentLoaded', () => {
+            const pad = document.getElementById('gate-pad');
+            if (pad) pad.addEventListener('click', (e) => {
+                const btn = e.target.closest('.gate-key');
+                if (!btn) return;
+                const k = btn.dataset.k;
+                if (k === 'del') { gatePin = gatePin.slice(0, -1); }
+                else if (k === 'clr') { gatePin = ''; }
+                else if (gatePin.length < 4) { gatePin += k; }
+                renderGateDots();
+                setGateStatus('\u00a0');
+                if (gatePin.length === 4) submitGate();
+            });
+        });
+        document.addEventListener('keydown', (e) => {
+            const gateEl = document.getElementById('gate-screen');
+            if (!gateEl || gateEl.style.display === 'none') return;
+            if (e.key >= '0' && e.key <= '9' && gatePin.length < 4) { gatePin += e.key; renderGateDots(); setGateStatus('\u00a0'); if (gatePin.length === 4) submitGate(); }
+            else if (e.key === 'Backspace') { gatePin = gatePin.slice(0, -1); renderGateDots(); setGateStatus('\u00a0'); }
+        });
 
         onAuthStateChanged(auth, (user) => {
             if (user) {
                 currentUser = user;
+                const gateEl = document.getElementById('gate-screen');
+                if (gateEl) gateEl.style.display = 'none';
                 setupProjectsListener();
                 checkAndDeleteOldProjects();
-            } else { initAuth(); }
+            }
+            // Kein automatischer Anonymous-Fallback mehr — ohne gültige
+            // Anmeldung bleibt das Zugangscode-Gate sichtbar.
         });
 
         async function checkAndDeleteOldProjects() {
@@ -98,15 +152,6 @@
                 }
             } catch (e) { console.error("Auto-cleanup Fehler:", e); }
         }
-
-        window.requestSecureAction = (callback) => {
-            const code = prompt("SICHERHEITSCODE EINGEBEN:");
-            if (code === ACTION_CODE) {
-                callback();
-            } else if (code !== null) {
-                showStatus("FALSCHER CODE! ZUGRIFF VERWEIGERT.", "error");
-            }
-        };
 
         function showStatus(msg, type = "success") {
             const status = document.getElementById('status-msg');
@@ -255,19 +300,19 @@
             }, (err) => console.error(err));
         }
 
+        // ── Terminüberschneidung: Termine sind fix 1 Stunde lang.            ──
+        // ── Zwei Termine dürfen sich nicht überlappen (< 60 Min. Abstand).   ──
         function checkDuplicateDateTime(datum, currentProjektId) {
             if (!datum) return null;
-            const normalize = (d) => {
-                const dt = new Date(d);
-                dt.setSeconds(0, 0);
-                return dt.getTime();
-            };
-            const targetTime = normalize(datum);
+            const targetTime = new Date(datum).getTime();
+            if (isNaN(targetTime)) return null;
             const conflict = allProjects.find(p => {
                 if (p.id === currentProjektId) return false;
-                if (p.id === loadedProjectId) return false; // NEU: beim Umbenennen den alten Eintrag ignorieren
+                if (p.id === loadedProjectId) return false; // beim Umbenennen den alten Eintrag ignorieren
                 if (!p.datum) return false;
-                return normalize(p.datum) === targetTime;
+                const existingTime = new Date(p.datum).getTime();
+                if (isNaN(existingTime)) return false;
+                return Math.abs(existingTime - targetTime) < APPOINTMENT_DURATION_MS;
             });
             return conflict || null;
         }
@@ -433,7 +478,7 @@
                         <div style="width:48px;height:48px;background:#fee2e2;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:1.5rem;flex-shrink:0;">🚫</div>
                         <div>
                             <div style="font-weight:900;font-size:15px;text-transform:uppercase;color:#991b1b;font-family:Inter,sans-serif;">Termin bereits belegt!</div>
-                            <div style="font-size:10px;font-weight:700;color:#ef4444;text-transform:uppercase;font-family:Inter,sans-serif;">Zeitkonflikt erkannt</div>
+                            <div style="font-size:10px;font-weight:700;color:#ef4444;text-transform:uppercase;font-family:Inter,sans-serif;">Zeitkonflikt erkannt (±1 Std.)</div>
                         </div>
                     </div>
                     <div style="background:#fef2f2;border:2px solid #fecaca;border-radius:1rem;padding:1rem;margin-bottom:1.25rem;">
@@ -443,7 +488,7 @@
                         <div style="font-size:11px;font-weight:900;color:#dc2626;font-family:Inter,sans-serif;margin-top:0.5rem;">📅 ${dateStr} · ${timeStr} Uhr</div>
                     </div>
                     <p style="font-size:11px;font-weight:700;color:#64748b;font-family:Inter,sans-serif;margin-bottom:1.25rem;line-height:1.5;">
-                        Dieser Zeitslot ist bereits durch ein anderes Projekt belegt. Bitte wähle eine andere Uhrzeit.
+                        Termine sind 1 Stunde lang. Dieser Zeitraum ist bereits belegt. Bitte wähle eine Uhrzeit mit mindestens 1 Stunde Abstand.
                     </p>
                     <button onclick="document.getElementById('duplicate-modal-overlay').remove()"
                         style="width:100%;padding:0.875rem;border-radius:0.875rem;border:none;background:#ef4444;color:white;font-weight:900;font-size:12px;text-transform:uppercase;cursor:pointer;font-family:Inter,sans-serif;letter-spacing:0.05em;">
@@ -454,7 +499,7 @@
             document.body.appendChild(overlay);
         }
 
-        window.saveToCloud = () => { window.requestSecureAction(performSave); };
+        window.saveToCloud = () => { performSave(); };
 
         async function loadProjectData(id) {
             try {
@@ -714,9 +759,7 @@
         // ABWESENHEITEN — Ferien / Frei eintragen
         // ════════════════════════════════════════════════
 
-        window.openAbwesenheitModal = () => {
-            window.requestSecureAction(() => showAbwesenheitModal());
-        };
+        window.openAbwesenheitModal = () => { showAbwesenheitModal(); };
 
         function showAbwesenheitModal() {
             const _t = new Date(); const today = _t.getFullYear() + '-' + String(_t.getMonth() + 1).padStart(2, '0') + '-' + String(_t.getDate()).padStart(2, '0');
@@ -1443,11 +1486,61 @@
         ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
 
         button, label, a { touch-action: manipulation; }
+
+        /* ===== ZUGANGSCODE GATE ===== */
+        #gate-screen {
+            position: fixed; inset: 0; z-index: 99999;
+            background: #0f172a;
+            display: flex; align-items: center; justify-content: center;
+        }
+        .gate-box {
+            background: #1e293b; border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 1.5rem; padding: 2.5rem 2rem; width: 100%; max-width: 340px;
+            text-align: center; box-shadow: 0 32px 80px rgba(0,0,0,0.4);
+        }
+        .gate-logo { font-size: 1.1rem; font-weight: 900; color: #fff; letter-spacing: -0.02em; text-transform: uppercase; }
+        .gate-logo span { color: #60a5fa; }
+        .gate-sub { font-size: 10px; color: #64748b; text-transform: uppercase; letter-spacing: 0.15em; font-weight: 700; margin: 6px 0 20px; }
+        .gate-dots { display: flex; justify-content: center; gap: 12px; margin-bottom: 8px; }
+        .gate-dot { width: 12px; height: 12px; border-radius: 50%; border: 2px solid #3b82f6; transition: all 0.15s; }
+        .gate-dot.filled { background: #3b82f6; transform: scale(1.1); }
+        .gate-status { font-size: 10px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.08em; min-height: 16px; margin: 8px 0 16px; color: #64748b; }
+        .gate-status.err { color: #f87171; }
+        .gate-status.ok { color: #34d399; }
+        .gate-pad { display: grid; grid-template-columns: repeat(3,1fr); gap: 10px; }
+        .gate-key { padding: 16px; border-radius: 0.875rem; border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.05); color: #fff; font-size: 18px; font-weight: 900; cursor: pointer; transition: all 0.1s; }
+        .gate-key:active { transform: scale(0.94); background: rgba(59,130,246,0.25); }
     </style>
 </head>
 <body>
 
     <div id="status-msg" class="fixed opacity-0 pointer-events-none z-[1000]"></div>
+
+    <!-- ===== ZUGANGSCODE (GATE) ===== -->
+    <div id="gate-screen">
+        <div class="gate-box">
+            <div class="gate-logo">GIS <span>SYSTEM</span></div>
+            <div class="gate-sub">Zugangscode</div>
+            <div class="gate-dots" id="gate-dots">
+                <div class="gate-dot"></div><div class="gate-dot"></div><div class="gate-dot"></div><div class="gate-dot"></div>
+            </div>
+            <div class="gate-status" id="gate-status">&nbsp;</div>
+            <div class="gate-pad" id="gate-pad">
+                <button class="gate-key" data-k="1">1</button>
+                <button class="gate-key" data-k="2">2</button>
+                <button class="gate-key" data-k="3">3</button>
+                <button class="gate-key" data-k="4">4</button>
+                <button class="gate-key" data-k="5">5</button>
+                <button class="gate-key" data-k="6">6</button>
+                <button class="gate-key" data-k="7">7</button>
+                <button class="gate-key" data-k="8">8</button>
+                <button class="gate-key" data-k="9">9</button>
+                <button class="gate-key" data-k="del">⌫</button>
+                <button class="gate-key" data-k="0">0</button>
+                <button class="gate-key" data-k="clr">✕</button>
+            </div>
+        </div>
+    </div>
 
     <!-- Archiv Modal -->
     <div id="archiv-modal" class="fixed inset-0 bg-slate-950/95 backdrop-blur-2xl z-[2000] hidden flex items-center justify-center p-0 md:p-4">
