@@ -1,1774 +1,951 @@
 <!DOCTYPE html>
 <html lang="de">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <meta name="mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <title>GIS SYSTEM CLOUD - SECURE ACTIONS</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
-    <script>
-        window.tailwind = window.tailwind || {};
-    </script>
-    <script src="https://cdn.tailwindcss.com?plugins=forms"></script>
-    <script>
-        const _warn = console.warn.bind(console);
-        console.warn = (...args) => {
-            if (args[0] && typeof args[0] === 'string' && args[0].includes('cdn.tailwindcss.com')) return;
-            _warn(...args);
-        };
-    </script>
-    <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot, updateDoc, getDocs, deleteDoc, writeBatch, query, orderBy } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-        import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-
-        // ============================================================
-        // ZUGANGSCODE — einziger Code für diese App: 3161
-        // Erst nach korrekter Eingabe meldet sich die App bei Firebase an.
-        // Es gibt hier bewusst nur diesen einen Code (keine Gruppen-PINs).
-        // ============================================================
-        window.AUSMASS_GATE = {
-            pin: "3161",
-            email: "zugang-ausmass@pe-intern.local",
-            password: "PE-Zugang-3161a"
-        };
-
-        const firebaseConfig = {
-            apiKey: "AIzaSyDZdCAoXdP0QfKJdnxBWzZ5vo4trhzsa74",
-            authDomain: "ausmass-plaene.firebaseapp.com",
-            projectId: "ausmass-plaene",
-            storageBucket: "ausmass-plaene.firebasestorage.app",
-            messagingSenderId: "270413900259",
-            appId: "1:270413900259:web:642158e2858a9ad28058d6"
-        };
-
-        const appId = "ausmass-plaene-app";
-        const app = initializeApp(firebaseConfig);
-        const auth = getAuth(app);
-        const db = getFirestore(app);
-
-        let currentUser = null;
-        let allProjects = [];
-        let allSnapshots = [];
-        let allAbwesenheiten = [];
-        let currentWeekStart = new Date();
-        let currentFiles = [];
-        let loadedProjectId = null; // NEU: ID des aktuell geladenen Projekts (für Umbenennen)
-        const CHUNK_SIZE = 700000;
-        const MAX_AGE_DAYS = 50;
-        const APPOINTMENT_DURATION_MS = 60 * 60 * 1000; // Termine sind fix 1 Stunde lang
-
-        const ABWESENHEIT_COLORS = {
-            'Ferien':        { bg: '#fef9c3', border: '#fbbf24', text: '#92400e', dot: '#f59e0b' },
-            'Frei':          { bg: '#dbeafe', border: '#60a5fa', text: '#1e40af', dot: '#3b82f6' },
-            'Krank':         { bg: '#fee2e2', border: '#f87171', text: '#991b1b', dot: '#ef4444' },
-            'Weiterbildung': { bg: '#ede9fe', border: '#a78bfa', text: '#4c1d95', dot: '#8b5cf6' },
-        };
-
-        // ── ZUGANGSCODE-GATE ──
-        let gatePin = '';
-        const renderGateDots = () => {
-            const dots = document.querySelectorAll('#gate-dots .gate-dot');
-            dots.forEach((d, i) => d.classList.toggle('filled', i < gatePin.length));
-        };
-        const setGateStatus = (msg, cls) => {
-            const el = document.getElementById('gate-status');
-            if (!el) return;
-            el.textContent = msg;
-            el.className = 'gate-status' + (cls ? ' ' + cls : '');
-        };
-        const submitGate = async () => {
-            const gate = window.AUSMASS_GATE;
-            if (gatePin !== gate.pin) {
-                setGateStatus('Falscher Code', 'err');
-                setTimeout(() => { gatePin = ''; renderGateDots(); setGateStatus('\u00a0'); }, 900);
-                return;
-            }
-            setGateStatus('Prüfe...', '');
-            try {
-                await setPersistence(auth, browserLocalPersistence);
-                await signInWithEmailAndPassword(auth, gate.email, gate.password);
-                document.getElementById('gate-screen').style.display = 'none';
-            } catch (e) {
-                console.error('Zugangscode-Anmeldung fehlgeschlagen:', e.message);
-                setGateStatus('Zugang fehlgeschlagen', 'err');
-                setTimeout(() => { gatePin = ''; renderGateDots(); setGateStatus('\u00a0'); }, 1200);
-            }
-        };
-        window.addEventListener('DOMContentLoaded', () => {
-            const pad = document.getElementById('gate-pad');
-            if (pad) pad.addEventListener('click', (e) => {
-                const btn = e.target.closest('.gate-key');
-                if (!btn) return;
-                const k = btn.dataset.k;
-                if (k === 'del') { gatePin = gatePin.slice(0, -1); }
-                else if (k === 'clr') { gatePin = ''; }
-                else if (gatePin.length < 4) { gatePin += k; }
-                renderGateDots();
-                setGateStatus('\u00a0');
-                if (gatePin.length === 4) submitGate();
-            });
-        });
-        document.addEventListener('keydown', (e) => {
-            const gateEl = document.getElementById('gate-screen');
-            if (!gateEl || gateEl.style.display === 'none') return;
-            if (e.key >= '0' && e.key <= '9' && gatePin.length < 4) { gatePin += e.key; renderGateDots(); setGateStatus('\u00a0'); if (gatePin.length === 4) submitGate(); }
-            else if (e.key === 'Backspace') { gatePin = gatePin.slice(0, -1); renderGateDots(); setGateStatus('\u00a0'); }
-        });
-
-        onAuthStateChanged(auth, (user) => {
-            if (user) {
-                currentUser = user;
-                const gateEl = document.getElementById('gate-screen');
-                if (gateEl) gateEl.style.display = 'none';
-                setupProjectsListener();
-                checkAndDeleteOldProjects();
-            }
-            // Kein automatischer Anonymous-Fallback mehr — ohne gültige
-            // Anmeldung bleibt das Zugangscode-Gate sichtbar.
-        });
-
-        async function checkAndDeleteOldProjects() {
-            try {
-                const now = new Date();
-                const cutoffDate = new Date(now.getTime() - (MAX_AGE_DAYS * 24 * 60 * 60 * 1000));
-                const snap = await getDocs(collection(db, 'artifacts', appId, 'public', 'data', 'projekte'));
-                let deletedCount = 0;
-                for (const docSnap of snap.docs) {
-                    const data = docSnap.data();
-                    const refDate = data.lastUpdated || data.createdAt;
-                    if (refDate) {
-                        const projectDate = new Date(refDate);
-                        if (projectDate < cutoffDate) {
-                            await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'projekte', docSnap.id));
-                            deletedCount++;
-                        }
-                    }
-                }
-                if (deletedCount > 0) {
-                    showStatus(`${deletedCount} ALTE PROJEKT(E) AUTO-GELÖSCHT (>50 TAGE)`, "info");
-                }
-            } catch (e) { console.error("Auto-cleanup Fehler:", e); }
-        }
-
-        function showStatus(msg, type = "success") {
-            const status = document.getElementById('status-msg');
-            if (!status) return;
-            status.innerText = msg;
-            const colors = { success: 'bg-blue-600', error: 'bg-red-600', info: 'bg-amber-500' };
-            status.className = `fixed top-4 left-4 right-4 px-5 py-4 rounded-2xl text-white text-[11px] font-black uppercase tracking-widest shadow-2xl z-[500] transition-all duration-500 text-center ${colors[type] || colors.success}`;
-            status.style.opacity = "1";
-            setTimeout(() => { if(status) { status.style.opacity = "0"; } }, 4000);
-        }
-
-        function updateFileLoadingState(fileId, state, progress = null) {
-            const indicator = document.getElementById(`loading-${fileId}`);
-            if (!indicator) return;
-            if (state === 'loading') {
-                indicator.innerHTML = `<span class="text-amber-400 text-[9px] font-black uppercase animate-pulse">⏳ WIRD GELADEN${progress ? ` ${progress}%` : '...'}</span>`;
-            } else if (state === 'ready') {
-                indicator.innerHTML = `<span class="text-green-400 text-[9px] font-black uppercase">✅ BEREIT</span>`;
-            } else if (state === 'error') {
-                indicator.innerHTML = `<span class="text-red-400 text-[9px] font-black uppercase">❌ FEHLER</span>`;
-            }
-        }
-
-        async function handleFileUpload(event) {
-            const files = event.target.files;
-            if (!files.length) return;
-            for (let file of files) {
-                if (file.size > 15 * 1024 * 1024) {
-                    showStatus(`${file.name} ZU GROSS (MAX 15MB)`, "error");
-                    continue;
-                }
-                const reader = new FileReader();
-                reader.onload = (e) => {
-                    const fileData = {
-                        name: file.name,
-                        type: file.type,
-                        size: file.size,
-                        data: e.target.result,
-                        id: crypto.randomUUID(),
-                        isNew: true,
-                        loadState: 'local'
-                    };
-                    currentFiles.push(fileData);
-                    renderFileList();
-                    showStatus(`${file.name} HINZUGEFÜGT`);
-                };
-                reader.readAsDataURL(file);
-            }
-            event.target.value = "";
-        }
-
-        function renderFileList() {
-            const list = document.getElementById('file-list');
-            if (!list) return;
-            list.innerHTML = '';
-            if (currentFiles.length === 0) {
-                list.innerHTML = '<div class="text-[10px] text-slate-400 font-black uppercase py-8 text-center italic tracking-widest">Keine Pläne hinterlegt</div>';
-                return;
-            }
-            currentFiles.forEach(file => {
-                const div = document.createElement('div');
-                div.className = "flex items-center justify-between p-3 bg-white/5 rounded-2xl border border-white/10 mb-2";
-                const isReady = file.data && file.data.length > 0;
-                const isLocal = file.loadState === 'local';
-                const isLoading = file.loadState === 'loading';
-                div.innerHTML = `
-                    <div class="flex items-center gap-3 flex-1 min-w-0">
-                        <div class="p-2 bg-slate-800 rounded-lg flex-shrink-0">
-                            <svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" stroke-width="2"></path>
-                            </svg>
-                        </div>
-                        <div class="flex flex-col min-w-0">
-                            <span class="text-[11px] font-black text-white truncate uppercase italic">${file.name}</span>
-                            <span class="text-[9px] text-blue-400 font-black uppercase tracking-widest">${(file.size / 1024 / 1024).toFixed(2)} MB</span>
-                            <div id="loading-${file.id}">
-                                ${isLocal ? '<span class="text-green-400 text-[9px] font-black uppercase">✅ LOKAL BEREIT</span>' :
-                                  isLoading ? '<span class="text-amber-400 text-[9px] font-black uppercase animate-pulse">⏳ WIRD GELADEN...</span>' :
-                                  isReady ? '<span class="text-green-400 text-[9px] font-black uppercase">✅ BEREIT</span>' :
-                                  '<span class="text-slate-500 text-[9px] font-black uppercase">⏳ WARTE...</span>'}
-                            </div>
-                        </div>
-                    </div>
-                    <div class="flex gap-1 items-center flex-shrink-0 ml-2">
-                        ${!isReady && !isLocal ? `<button onclick="retryLoadFile('${file.id}')" class="text-amber-400 text-xl w-10 h-10 flex items-center justify-center">🔄</button>` : ''}
-                        <button onclick="downloadFile('${file.id}')"
-                            class="text-xl w-10 h-10 flex items-center justify-center ${isReady || isLocal ? 'text-white' : 'text-slate-600 opacity-40'}"
-                            ${!isReady && !isLocal ? 'disabled' : ''}>📥</button>
-                        <button onclick="removeFile('${file.id}')" class="text-slate-500 text-xl w-10 h-10 flex items-center justify-center">🗑️</button>
-                    </div>
-                `;
-                list.appendChild(div);
-            });
-        }
-
-        window.retryLoadFile = async (fileId) => {
-            const file = currentFiles.find(f => f.id === fileId);
-            if (!file) return;
-            const currentProjectId = document.getElementById('projekt_id')?.value.trim();
-            if (!currentProjectId) { showStatus("KEIN PROJEKT GELADEN", "error"); return; }
-            showStatus("LADE DATEI ERNEUT...", "info");
-            await loadFileDataChunks(currentProjectId, fileId);
-        };
-
-        window.downloadFile = (id) => {
-            const file = currentFiles.find(f => f.id === id);
-            if (!file) { showStatus("DATEI NICHT GEFUNDEN", "error"); return; }
-            if (!file.data || file.data.length === 0) {
-                showStatus("DATEI WIRD NOCH GELADEN — BITTE WARTEN", "error");
-                return;
-            }
-            const link = document.createElement('a');
-            link.href = file.data;
-            link.download = file.name;
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-        };
-
-        window.removeFile = (id) => {
-            currentFiles = currentFiles.filter(f => f.id !== id);
-            renderFileList();
-        };
-
-        function setupProjectsListener() {
-            const q = collection(db, 'artifacts', appId, 'public', 'data', 'projekte');
-            onSnapshot(q, (snap) => {
-                allProjects = [];
-                snap.forEach(d => allProjects.push({ id: d.id, ...d.data() }));
-                renderArchiv(document.getElementById('archiv-search')?.value || "");
-                if(!document.getElementById('calendar-tab').classList.contains('hidden')) renderWorkWeek();
-            }, (err) => console.error(err));
-
-            const sq = collection(db, 'artifacts', appId, 'public', 'data', 'kalender_snapshots');
-            onSnapshot(sq, (snap) => {
-                allSnapshots = [];
-                snap.forEach(d => allSnapshots.push({ id: d.id, ...d.data() }));
-                if(!document.getElementById('calendar-tab').classList.contains('hidden')) renderWorkWeek();
-            }, (err) => console.error(err));
-
-            const aq = collection(db, 'artifacts', appId, 'public', 'data', 'kalender_abwesenheiten');
-            onSnapshot(aq, (snap) => {
-                allAbwesenheiten = [];
-                snap.forEach(d => allAbwesenheiten.push({ id: d.id, ...d.data() }));
-                if(!document.getElementById('calendar-tab').classList.contains('hidden')) renderWorkWeek();
-            }, (err) => console.error(err));
-        }
-
-        // ── Terminüberschneidung: Termine sind fix 1 Stunde lang.            ──
-        // ── Zwei Termine dürfen sich nicht überlappen (< 60 Min. Abstand).   ──
-        function checkDuplicateDateTime(datum, currentProjektId) {
-            if (!datum) return null;
-            const targetTime = new Date(datum).getTime();
-            if (isNaN(targetTime)) return null;
-            const conflict = allProjects.find(p => {
-                if (p.id === currentProjektId) return false;
-                if (p.id === loadedProjectId) return false; // beim Umbenennen den alten Eintrag ignorieren
-                if (!p.datum) return false;
-                const existingTime = new Date(p.datum).getTime();
-                if (isNaN(existingTime)) return false;
-                return Math.abs(existingTime - targetTime) < APPOINTMENT_DURATION_MS;
-            });
-            return conflict || null;
-        }
-
-        async function performSave() {
-            if(!currentUser) { showStatus("NICHT ANGEMELDET", "error"); return; }
-            const data = getFormData();
-            if(!data.projekt_id) { showStatus("PROJEKT-ID FEHLT!", "error"); return; }
-            if(!data.datum) { showStatus("DATUM FEHLT!", "error"); return; }
-
-            // ════════════════════════════════════════════════
-            // UMBENENNEN erkennen:
-            // Ein Projekt wurde geladen UND die Objektbezeichnung wurde geändert
-            // → gleicher Auftrag, nur neuer Name (KEIN neues Projekt anlegen!)
-            // ════════════════════════════════════════════════
-            const isRename = loadedProjectId && loadedProjectId !== data.projekt_id;
-
-            if (isRename) {
-                // Der neue Name darf noch nicht vergeben sein (sonst würden wir ein anderes Projekt überschreiben)
-                if (allProjects.some(p => p.id === data.projekt_id)) {
-                    showStatus(`OBJEKTNAME "${data.projekt_id}" EXISTIERT BEREITS!`, "error");
-                    return;
-                }
-                const ok = confirm(
-                    `OBJEKT UMBENENNEN?\n\n` +
-                    `Von:  "${loadedProjectId}"\n` +
-                    `Zu:   "${data.projekt_id}"\n\n` +
-                    `Es bleibt derselbe Auftrag. Termin, Dateien und erledigter Verlauf werden übernommen.`
-                );
-                if (!ok) return;
-            }
-
-            const conflict = checkDuplicateDateTime(data.datum, data.projekt_id);
-            if (conflict) {
-                const conflictDate = new Date(conflict.datum);
-                const dateStr = conflictDate.toLocaleDateString('de-DE', { weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric' });
-                const timeStr = conflictDate.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
-                showDuplicateError(conflict.id, conflict.adresse || '–', dateStr, timeStr);
-                return;
-            }
-
-            showStatus(isRename ? "BENENNE OBJEKT UM..." : "SPEICHERE IN CLOUD...", "info");
-
-            try {
-                const projectRef = doc(db, 'artifacts', appId, 'public', 'data', 'projekte', data.projekt_id);
-                const fileMetadata = currentFiles.map(f => ({
-                    id: f.id, name: f.name, size: f.size, type: f.type,
-                    ...(f.chunkCount ? { chunkCount: f.chunkCount } : {})
-                }));
-
-                // createdAt ermitteln (beim Umbenennen vom ALTEN Dokument übernehmen)
-                let createdAt;
-                if (isRename) {
-                    const oldSnap = await getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'projekte', loadedProjectId));
-                    createdAt = oldSnap.exists() ? (oldSnap.data().createdAt || new Date().toISOString()) : new Date().toISOString();
-                } else {
-                    const existingSnap = await getDoc(projectRef);
-                    createdAt = existingSnap.exists() ? (existingSnap.data().createdAt || new Date().toISOString()) : new Date().toISOString();
-                }
-
-                await setDoc(projectRef, {
-                    ...data,
-                    files: fileMetadata,
-                    createdAt: createdAt,
-                    lastUpdated: new Date().toISOString()
-                }, { merge: true });
-
-                // Beim Umbenennen: bereits hochgeladene Dateien an den neuen Ort kopieren
-                if (isRename) {
-                    for (let file of currentFiles) {
-                        if (!file.isNew) {
-                            await copyFileChunks(loadedProjectId, data.projekt_id, file.id);
-                        }
-                    }
-                }
-
-                // Neue Dateien hochladen (gilt für normales Speichern UND Umbenennen)
-                for (let file of currentFiles) {
-                    if (file.isNew && file.data && file.data.length > 0) {
-                        const str = file.data;
-                        let partIndex = 0;
-                        const totalChunks = Math.ceil(str.length / CHUNK_SIZE);
-                        showStatus(`UPLOADING ${file.name} (${totalChunks} TEILE)...`, "info");
-                        for (let i = 0; i < str.length; i += CHUNK_SIZE) {
-                            const chunkContent = str.substring(i, i + CHUNK_SIZE);
-                            const chunkRef = doc(db, 'artifacts', appId, 'public', 'data', 'projekte', data.projekt_id, 'fileData', file.id, 'chunks', `part_${partIndex}`);
-                            await setDoc(chunkRef, { part: partIndex, totalParts: totalChunks, content: chunkContent });
-                            partIndex++;
-                        }
-                        const updatedFiles = currentFiles.map(f2 => ({
-                            id: f2.id, name: f2.name, size: f2.size, type: f2.type,
-                            chunkCount: f2.id === file.id ? partIndex : (f2.chunkCount || 0)
-                        }));
-                        await updateDoc(projectRef, { files: updatedFiles });
-                        file.isNew = false;
-                        file.loadState = 'local';
-                        file.chunkCount = partIndex;
-                    }
-                }
-
-                // Beim Umbenennen: erledigten Verlauf übernehmen + altes Projekt komplett löschen
-                if (isRename) {
-                    await migrateSnapshots(loadedProjectId, data.projekt_id);
-                    await deleteProjectCompletely(loadedProjectId, currentFiles);
-                }
-
-                loadedProjectId = data.projekt_id; // ab jetzt gilt der neue Name als "geladen"
-                showStatus(isRename ? `UMBENANNT IN "${data.projekt_id}" ✓` : "ERFOLGREICH GESPEICHERT ✓");
-                renderFileList();
-                renderWorkWeek();
-            } catch(e) {
-                console.error("Speicherfehler:", e);
-                showStatus("SPEICHERFEHLER! BITTE ERNEUT VERSUCHEN.", "error");
-            }
-        }
-
-        // ── Datei-Chunks von altem Projekt zu neuem kopieren (beim Umbenennen) ──
-        async function copyFileChunks(oldProjectId, newProjectId, fileId) {
-            const oldChunksRef = collection(db, 'artifacts', appId, 'public', 'data', 'projekte', oldProjectId, 'fileData', fileId, 'chunks');
-            const snap = await getDocs(oldChunksRef);
-            if (snap.empty) return;
-            for (const chunkDoc of snap.docs) {
-                const newChunkRef = doc(db, 'artifacts', appId, 'public', 'data', 'projekte', newProjectId, 'fileData', fileId, 'chunks', chunkDoc.id);
-                await setDoc(newChunkRef, chunkDoc.data());
-            }
-        }
-
-        // ── Erledigt-Verlauf (Snapshots) auf den neuen Namen umschreiben (beim Umbenennen) ──
-        async function migrateSnapshots(oldProjectId, newProjectId) {
-            const matching = allSnapshots.filter(s => s.projektId === oldProjectId);
-            for (const s of matching) {
-                const { id: _oldSnapId, ...snapData } = s;
-                const newSnapId = newProjectId + '__' + (s.datum || '').replace(/[:.]/g, '-');
-                await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'kalender_snapshots', newSnapId), {
-                    ...snapData,
-                    projektId: newProjectId
-                });
-                await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'kalender_snapshots', _oldSnapId));
-            }
-        }
-
-        // ── Altes Projekt vollständig löschen: Datei-Chunks + Dokument (beim Umbenennen) ──
-        async function deleteProjectCompletely(projectId, files) {
-            for (const file of (files || [])) {
-                try {
-                    const chunksRef = collection(db, 'artifacts', appId, 'public', 'data', 'projekte', projectId, 'fileData', file.id, 'chunks');
-                    const snap = await getDocs(chunksRef);
-                    for (const chunkDoc of snap.docs) {
-                        await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'projekte', projectId, 'fileData', file.id, 'chunks', chunkDoc.id));
-                    }
-                } catch (e) { console.error('Chunk-Löschung Fehler:', e); }
-            }
-            await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'projekte', projectId));
-        }
-
-        function showDuplicateError(conflictId, conflictAddr, dateStr, timeStr) {
-            const overlay = document.createElement('div');
-            overlay.id = 'duplicate-modal-overlay';
-            overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.75);backdrop-filter:blur(8px);z-index:9999;display:flex;align-items:center;justify-content:center;padding:1rem;';
-            overlay.innerHTML = `
-                <div style="background:#fff;border-radius:1.5rem;padding:2rem;width:100%;max-width:380px;box-shadow:0 25px 60px rgba(0,0,0,0.3);border-top:4px solid #ef4444;">
-                    <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:1.25rem;">
-                        <div style="width:48px;height:48px;background:#fee2e2;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:1.5rem;flex-shrink:0;">🚫</div>
-                        <div>
-                            <div style="font-weight:900;font-size:15px;text-transform:uppercase;color:#991b1b;font-family:Inter,sans-serif;">Termin bereits belegt!</div>
-                            <div style="font-size:10px;font-weight:700;color:#ef4444;text-transform:uppercase;font-family:Inter,sans-serif;">Zeitkonflikt erkannt (±1 Std.)</div>
-                        </div>
-                    </div>
-                    <div style="background:#fef2f2;border:2px solid #fecaca;border-radius:1rem;padding:1rem;margin-bottom:1.25rem;">
-                        <div style="font-size:9px;font-weight:900;text-transform:uppercase;color:#94a3b8;font-family:Inter,sans-serif;margin-bottom:0.5rem;">Bereits eingetragen:</div>
-                        <div style="font-size:14px;font-weight:900;text-transform:uppercase;color:#dc2626;font-style:italic;font-family:Inter,sans-serif;">${conflictId}</div>
-                        <div style="font-size:11px;font-weight:700;color:#374151;font-family:Inter,sans-serif;margin-top:0.25rem;">${conflictAddr}</div>
-                        <div style="font-size:11px;font-weight:900;color:#dc2626;font-family:Inter,sans-serif;margin-top:0.5rem;">📅 ${dateStr} · ${timeStr} Uhr</div>
-                    </div>
-                    <p style="font-size:11px;font-weight:700;color:#64748b;font-family:Inter,sans-serif;margin-bottom:1.25rem;line-height:1.5;">
-                        Termine sind 1 Stunde lang. Dieser Zeitraum ist bereits belegt. Bitte wähle eine Uhrzeit mit mindestens 1 Stunde Abstand.
-                    </p>
-                    <button onclick="document.getElementById('duplicate-modal-overlay').remove()"
-                        style="width:100%;padding:0.875rem;border-radius:0.875rem;border:none;background:#ef4444;color:white;font-weight:900;font-size:12px;text-transform:uppercase;cursor:pointer;font-family:Inter,sans-serif;letter-spacing:0.05em;">
-                        ← DATUM/UHRZEIT ÄNDERN
-                    </button>
-                </div>
-            `;
-            document.body.appendChild(overlay);
-        }
-
-        window.saveToCloud = () => { performSave(); };
-
-        async function loadProjectData(id) {
-            try {
-                showStatus("LADE PROJEKT...", "info");
-                const snap = await getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'projekte', id));
-                if(snap.exists()) {
-                    const d = snap.data();
-                    switchTab('form-tab');
-                    loadedProjectId = id; // NEU: merken, welches Projekt geladen ist (für Umbenennen)
-                    const setVal = (fid, val) => { const el = document.getElementById(fid); if(el) el.value = val || ''; };
-                    setVal('projekt_id', id); setVal('adresse', d.adresse); setVal('datum', d.datum);
-                    setVal('pl_intern', d.pl_intern); setVal('zeichner', d.zeichner); setVal('kunde', d.kunde);
-                    setVal('pl_extern', d.pl_extern); setVal('tel_bauleitung', d.tel_bauleitung);
-                    setVal('tel_monteur', d.tel_monteur); setVal('verantwortlicher', d.verantwortlicher);
-                    setVal('interne_infos', d.interne_infos); setVal('baustellen_protokoll', d.baustellen_protokoll);
-
-                    document.querySelectorAll('input[name="art"]').forEach(rb => rb.checked = (rb.value === d.auftragsart));
-                    document.querySelectorAll('input[name="mr"]').forEach(rb => rb.checked = (rb.value === d.mr_status));
-                    document.querySelectorAll('.etage-cb').forEach(cb => { cb.checked = (d.etagen || []).includes(cb.value); updateEtageStyle(cb); });
-
-                    currentFiles = (d.files || []).map(f => ({ ...f, data: null, loadState: 'loading' }));
-                    renderFileList();
-
-                    const loadPromises = currentFiles.map(file =>
-                        loadFileDataChunks(id, file.id).catch(err => {
-                            console.error(`Fehler beim Laden von ${file.name}:`, err);
-                            const idx = currentFiles.findIndex(f => f.id === file.id);
-                            if (idx !== -1) { currentFiles[idx].loadState = 'error'; updateFileLoadingState(file.id, 'error'); }
-                        })
-                    );
-                    Promise.all(loadPromises).then(() => { showStatus("ALLE DATEIEN GELADEN ✓"); renderFileList(); });
-
-                    closeArchiv();
-                    showStatus("PROJEKT GELADEN");
-                    window.scrollTo({ top: 0, behavior: 'smooth' });
-                }
-            } catch (e) { console.error("Ladefehler:", e); showStatus("FEHLER BEIM LADEN", "error"); }
-        }
-
-        async function loadFileDataChunks(projectId, fileId) {
-            try {
-                const idx = currentFiles.findIndex(f => f.id === fileId);
-                if (idx !== -1) { currentFiles[idx].loadState = 'loading'; updateFileLoadingState(fileId, 'loading'); }
-                const chunksRef = collection(db, 'artifacts', appId, 'public', 'data', 'projekte', projectId, 'fileData', fileId, 'chunks');
-                const chunkSnap = await getDocs(chunksRef);
-                if (chunkSnap.empty) {
-                    if (idx !== -1) { currentFiles[idx].loadState = 'error'; updateFileLoadingState(fileId, 'error'); }
-                    return;
-                }
-                const chunks = [];
-                chunkSnap.forEach(docSnap => { const c = docSnap.data(); chunks.push({ part: c.part, content: c.content }); });
-                chunks.sort((a, b) => a.part - b.part);
-                for (let i = 0; i < chunks.length; i++) {
-                    if (chunks[i].part !== i) {
-                        if (idx !== -1) { currentFiles[idx].loadState = 'error'; updateFileLoadingState(fileId, 'error'); }
-                        return;
-                    }
-                }
-                const fullBase64 = chunks.map(c => c.content).join('');
-                if (idx !== -1) { currentFiles[idx].data = fullBase64; currentFiles[idx].isNew = false; currentFiles[idx].loadState = 'ready'; updateFileLoadingState(fileId, 'ready'); }
-            } catch (e) {
-                const idx = currentFiles.findIndex(f => f.id === fileId);
-                if (idx !== -1) { currentFiles[idx].loadState = 'error'; updateFileLoadingState(fileId, 'error'); }
-                throw e;
-            }
-        }
-
-        function getFormData() {
-            return {
-                auftragsart: document.querySelector('input[name="art"]:checked')?.value || '',
-                verantwortlicher: document.getElementById('verantwortlicher')?.value || '',
-                projekt_id: document.getElementById('projekt_id')?.value.trim() || '',
-                adresse: document.getElementById('adresse')?.value || '',
-                datum: document.getElementById('datum')?.value || '',
-                pl_intern: document.getElementById('pl_intern')?.value || '',
-                zeichner: document.getElementById('zeichner')?.value || '',
-                kunde: document.getElementById('kunde')?.value || '',
-                pl_extern: document.getElementById('pl_extern')?.value || '',
-                tel_bauleitung: document.getElementById('tel_bauleitung')?.value || '',
-                tel_monteur: document.getElementById('tel_monteur')?.value || '',
-                mr_status: document.querySelector('input[name="mr"]:checked')?.value || '',
-                etagen: Array.from(document.querySelectorAll('.etage-cb:checked')).map(cb => cb.value),
-                interne_infos: document.getElementById('interne_infos')?.value || '',
-                baustellen_protokoll: document.getElementById('baustellen_protokoll')?.value || '',
-                lastUpdated: new Date().toISOString()
-            };
-        }
-
-        function switchTab(tabId) {
-            document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
-            document.getElementById(tabId)?.classList.remove('hidden');
-            document.querySelectorAll('.bottom-nav-btn').forEach(btn => {
-                btn.classList.remove('text-blue-600');
-                btn.classList.add('text-slate-400');
-            });
-            const activeBtn = document.getElementById('nav-' + tabId);
-            if (activeBtn) { activeBtn.classList.add('text-blue-600'); activeBtn.classList.remove('text-slate-400'); }
-            if(tabId === 'calendar-tab') renderWorkWeek();
-        }
-
-        function getMonday(d) {
-            const date = new Date(d);
-            const day = date.getDay();
-            const diff = date.getDate() - (day === 0 ? 6 : day - 1);
-            const monday = new Date(date.setDate(diff));
-            monday.setHours(0, 0, 0, 0);
-            return monday;
-        }
-
-        function renderArchiv(filterText = "") {
-            const list = document.getElementById('archiv-liste');
-            if(!list) return;
-            list.innerHTML = '';
-            const lowerFilter = filterText.toLowerCase().trim();
-            const filtered = allProjects.filter(p =>
-                p.id.toLowerCase().includes(lowerFilter) ||
-                (p.adresse || "").toLowerCase().includes(lowerFilter) ||
-                (p.kunde || "").toLowerCase().includes(lowerFilter)
-            );
-            if(filtered.length === 0) {
-                list.innerHTML = '<div class="p-12 text-center text-[10px] font-black uppercase text-slate-500 italic">Keine Einträge gefunden</div>';
-                return;
-            }
-            const now = new Date();
-            filtered.sort((a, b) => new Date(b.lastUpdated || 0) - new Date(a.lastUpdated || 0)).forEach(p => {
-                const createdAt = p.createdAt ? new Date(p.createdAt) : null;
-                const ageDays = createdAt ? Math.floor((now - createdAt) / (1000 * 60 * 60 * 24)) : null;
-                const ageWarning = ageDays !== null && ageDays > 40
-                    ? `<span class="text-red-400 text-[8px] font-black uppercase">⚠️ ${ageDays} TAGE ALT</span>`
-                    : ageDays !== null ? `<span class="text-slate-500 text-[8px] font-black uppercase">${ageDays} TAGE</span>` : '';
-
-                const item = document.createElement('div');
-                item.className = "flex items-center justify-between p-4 border-b border-white/5 active:bg-white/5 cursor-pointer";
-                item.onclick = (e) => { if (!e.target.closest('button')) loadProjectData(p.id); };
-                item.innerHTML = `
-                    <div class="flex-1 min-w-0">
-                        <div class="font-black uppercase italic text-white text-[13px] tracking-tight">${p.id}</div>
-                        <div class="text-[9px] font-bold text-blue-500 uppercase tracking-widest mt-0.5">${p.kunde || 'KEIN KUNDE'}</div>
-                        <div class="text-[9px] font-bold text-slate-500 uppercase truncate mt-0.5">${p.adresse || '-'}</div>
-                        ${ageWarning}
-                    </div>
-                    <div class="flex items-center gap-3 ml-3 flex-shrink-0">
-                        <div class="text-right">
-                            <div class="text-[9px] font-black text-slate-500">${p.datum ? new Date(p.datum).toLocaleDateString('de-DE') : 'KEIN DATUM'}</div>
-                        </div>
-                        <button onclick="deleteProject('${p.id}', event)" class="bg-red-500/20 text-red-400 w-9 h-9 rounded-xl flex items-center justify-center text-sm font-black transition-all">🗑</button>
-                    </div>
-                `;
-                list.appendChild(item);
-            });
-        }
-
-        window.deleteProject = async (id, event) => {
-            if (event) { event.preventDefault(); event.stopPropagation(); }
-            const confirmed = confirm(`Projekt "${id}" löschen?`);
-            if (!confirmed) return;
-            showStatus("LÖSCHE PROJEKT...", "info");
-            try {
-                await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'projekte', id));
-                showStatus(`PROJEKT "${id}" ENTFERNT`, "success");
-            } catch (e) { showStatus("FEHLER BEIM LÖSCHEN", "error"); }
-        };
-
-        window.markDone = async (snapshotId, event) => {
-            if (event) { event.preventDefault(); event.stopPropagation(); }
-            const snap = allSnapshots.find(s => s.id === snapshotId);
-            if (!snap) return;
-            const undo = confirm(`Auftrag "${snap.projektId}" erledigt von: ${snap.erledigtVon}\n\nEintrag aus Kalender entfernen?`);
-            if (!undo) return;
-            try {
-                await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'kalender_snapshots', snapshotId));
-                showStatus('EINTRAG ENTFERNT', "info");
-            } catch(e) { showStatus("FEHLER", "error"); }
-        };
-
-        window.markDoneProject = async (projektId, datum, event) => {
-            if (event) { event.preventDefault(); event.stopPropagation(); }
-            showDoneModal(projektId, datum);
-        };
-
-        function showDoneModal(projektId, datum) {
-            const overlay = document.createElement('div');
-            overlay.id = 'done-modal-overlay';
-            overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.75);backdrop-filter:blur(8px);z-index:9999;display:flex;align-items:center;justify-content:center;padding:1rem;';
-            const escapedDatum = datum.replace(/"/g, '&quot;');
-            overlay.innerHTML = `
-                <div style="background:#fff;border-radius:1.5rem;padding:2rem;width:100%;max-width:380px;box-shadow:0 25px 60px rgba(0,0,0,0.3);">
-                    <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:1.25rem;">
-                        <div style="width:44px;height:44px;background:#16a34a;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:1.3rem;flex-shrink:0;">✅</div>
-                        <div>
-                            <div style="font-weight:900;font-size:14px;text-transform:uppercase;color:#0f172a;font-family:Inter,sans-serif;">Auftrag erledigt</div>
-                            <div style="font-size:10px;font-weight:700;color:#64748b;text-transform:uppercase;font-family:Inter,sans-serif;">${projektId}</div>
-                        </div>
-                    </div>
-                    <label style="font-size:9px;font-weight:900;text-transform:uppercase;color:#94a3b8;letter-spacing:0.1em;display:block;margin-bottom:0.5rem;font-family:Inter,sans-serif;">Dein Name (Pflicht)</label>
-                    <input id="done-name-input" type="text" placeholder="VORNAME NACHNAME"
-                        style="width:100%;border:2px solid #e2e8f0;border-radius:0.75rem;padding:0.875rem 1rem;font-size:16px;font-weight:800;text-transform:uppercase;outline:none;color:#0f172a;font-family:Inter,sans-serif;box-sizing:border-box;"
-                        onfocus="this.style.borderColor='#16a34a'" onblur="this.style.borderColor='#e2e8f0'">
-                    <div style="display:flex;gap:0.75rem;margin-top:1.25rem;">
-                        <button onclick="closeDoneModal()"
-                            style="flex:1;padding:0.875rem;border-radius:0.875rem;border:2px solid #e2e8f0;background:white;font-weight:900;font-size:11px;text-transform:uppercase;cursor:pointer;color:#64748b;font-family:Inter,sans-serif;">
-                            Abbrechen
-                        </button>
-                        <button onclick="confirmDone('${projektId}', '${escapedDatum}')"
-                            style="flex:1;padding:0.875rem;border-radius:0.875rem;border:none;background:#16a34a;color:white;font-weight:900;font-size:11px;text-transform:uppercase;cursor:pointer;box-shadow:0 4px 15px rgba(22,163,74,0.4);font-family:Inter,sans-serif;">
-                            ✓ Bestätigen
-                        </button>
-                    </div>
-                </div>
-            `;
-            document.body.appendChild(overlay);
-            setTimeout(() => document.getElementById('done-name-input')?.focus(), 100);
-            overlay.querySelector('#done-name-input').addEventListener('keydown', e => {
-                if (e.key === 'Enter') confirmDone(projektId, datum);
-            });
-        }
-
-        window.closeDoneModal = () => { document.getElementById('done-modal-overlay')?.remove(); };
-
-        window.confirmDone = async (projektId, datum) => {
-            const nameInput = document.getElementById('done-name-input');
-            const name = nameInput?.value.trim();
-            if (!name) {
-                nameInput.style.borderColor = '#ef4444';
-                nameInput.placeholder = 'NAME ERFORDERLICH!';
-                nameInput.focus();
-                return;
-            }
-            closeDoneModal();
-            showStatus("WIRD GESPEICHERT...", "info");
-            try {
-                const snapshotId = projektId + '__' + datum.replace(/[:.]/g, '-');
-                const prevSnaps = allSnapshots.filter(s => s.projektId === projektId);
-                const einsatzNr = prevSnaps.length + 1;
-                const project = allProjects.find(p => p.id === projektId) || {};
-
-                await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'kalender_snapshots', snapshotId), {
-                    projektId,
-                    datum,
-                    adresse:         project.adresse || '',
-                    kunde:           project.kunde || '',
-                    verantwortlicher: project.verantwortlicher || '',
-                    auftragsart:     project.auftragsart || '',
-                    pl_intern:       project.pl_intern || '',
-                    tel_bauleitung:  project.tel_bauleitung || '',
-                    tel_monteur:     project.tel_monteur || '',
-                    erledigtVon: name.toUpperCase(),
-                    erledigtAm: new Date().toISOString(),
-                    einsatzNr,
-                    createdAt: new Date().toISOString()
-                });
-                showStatus('✅ ERLEDIGT VON ' + name.toUpperCase() + ' · EINSATZ #' + einsatzNr, "success");
-            } catch(e) { console.error(e); showStatus("FEHLER BEIM SPEICHERN", "error"); }
-        };
-
-        // ════════════════════════════════════════════════
-        // ABWESENHEITEN — Ferien / Frei eintragen
-        // ════════════════════════════════════════════════
-
-        window.openAbwesenheitModal = () => { showAbwesenheitModal(); };
-
-        function showAbwesenheitModal() {
-            const _t = new Date(); const today = _t.getFullYear() + '-' + String(_t.getMonth() + 1).padStart(2, '0') + '-' + String(_t.getDate()).padStart(2, '0');
-            const overlay = document.createElement('div');
-            overlay.id = 'abwesenheit-modal-overlay';
-            overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.75);backdrop-filter:blur(8px);z-index:9999;display:flex;align-items:center;justify-content:center;padding:1rem;';
-            overlay.innerHTML = `
-                <div style="background:#fff;border-radius:1.5rem;padding:2rem;width:100%;max-width:400px;box-shadow:0 25px 60px rgba(0,0,0,0.3);max-height:90vh;overflow-y:auto;">
-                    <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:1.5rem;">
-                        <div style="width:44px;height:44px;background:#fef3c7;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:1.3rem;flex-shrink:0;">🏖️</div>
-                        <div>
-                            <div style="font-weight:900;font-size:14px;text-transform:uppercase;color:#0f172a;font-family:Inter,sans-serif;">Abwesenheit eintragen</div>
-                            <div style="font-size:10px;font-weight:700;color:#64748b;text-transform:uppercase;font-family:Inter,sans-serif;">Ferien · Frei · Krank</div>
-                        </div>
-                    </div>
-                    <label style="font-size:9px;font-weight:900;text-transform:uppercase;color:#94a3b8;letter-spacing:0.1em;display:block;margin-bottom:0.4rem;font-family:Inter,sans-serif;">Name der Person (Pflicht)</label>
-                    <input id="abw-name" type="text" placeholder="VORNAME NACHNAME"
-                        style="width:100%;border:2px solid #e2e8f0;border-radius:0.75rem;padding:0.75rem 1rem;font-size:16px;font-weight:800;text-transform:uppercase;outline:none;color:#0f172a;font-family:Inter,sans-serif;box-sizing:border-box;margin-bottom:1rem;"
-                        onfocus="this.style.borderColor='#f59e0b'" onblur="this.style.borderColor='#e2e8f0'">
-                    <label style="font-size:9px;font-weight:900;text-transform:uppercase;color:#94a3b8;letter-spacing:0.1em;display:block;margin-bottom:0.4rem;font-family:Inter,sans-serif;">Art der Abwesenheit</label>
-                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem;margin-bottom:1rem;" id="abw-typ-grid">
-                        <button class="abw-typ-btn" data-typ="Ferien" onclick="selectAbwTyp('Ferien')"
-                            style="padding:0.75rem 0.5rem;border-radius:0.75rem;border:2px solid #fbbf24;background:#fef9c3;font-size:11px;font-weight:900;text-transform:uppercase;cursor:pointer;color:#92400e;font-family:Inter,sans-serif;">
-                            🏖️ Ferien
-                        </button>
-                        <button class="abw-typ-btn" data-typ="Frei" onclick="selectAbwTyp('Frei')"
-                            style="padding:0.75rem 0.5rem;border-radius:0.75rem;border:2px solid #e2e8f0;background:#f8fafc;font-size:11px;font-weight:900;text-transform:uppercase;cursor:pointer;color:#475569;font-family:Inter,sans-serif;">
-                            🌴 Frei
-                        </button>
-                        <button class="abw-typ-btn" data-typ="Krank" onclick="selectAbwTyp('Krank')"
-                            style="padding:0.75rem 0.5rem;border-radius:0.75rem;border:2px solid #e2e8f0;background:#f8fafc;font-size:11px;font-weight:900;text-transform:uppercase;cursor:pointer;color:#475569;font-family:Inter,sans-serif;">
-                            🤒 Krank
-                        </button>
-                        <button class="abw-typ-btn" data-typ="Weiterbildung" onclick="selectAbwTyp('Weiterbildung')"
-                            style="padding:0.75rem 0.5rem;border-radius:0.75rem;border:2px solid #e2e8f0;background:#f8fafc;font-size:11px;font-weight:900;text-transform:uppercase;cursor:pointer;color:#475569;font-family:Inter,sans-serif;">
-                            📚 Weiterbild.
-                        </button>
-                    </div>
-                    <input type="hidden" id="abw-typ-value" value="Ferien">
-                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem;margin-bottom:1rem;">
-                        <div>
-                            <label style="font-size:9px;font-weight:900;text-transform:uppercase;color:#94a3b8;letter-spacing:0.1em;display:block;margin-bottom:0.4rem;font-family:Inter,sans-serif;">Von</label>
-                            <input id="abw-von" type="date" value="${today}"
-                                style="width:100%;border:2px solid #e2e8f0;border-radius:0.75rem;padding:0.75rem 0.75rem;font-size:14px;font-weight:800;outline:none;color:#0f172a;font-family:Inter,sans-serif;box-sizing:border-box;"
-                                onfocus="this.style.borderColor='#f59e0b'" onblur="this.style.borderColor='#e2e8f0'">
-                        </div>
-                        <div>
-                            <label style="font-size:9px;font-weight:900;text-transform:uppercase;color:#94a3b8;letter-spacing:0.1em;display:block;margin-bottom:0.4rem;font-family:Inter,sans-serif;">Bis</label>
-                            <input id="abw-bis" type="date" value="${today}"
-                                style="width:100%;border:2px solid #e2e8f0;border-radius:0.75rem;padding:0.75rem 0.75rem;font-size:14px;font-weight:800;outline:none;color:#0f172a;font-family:Inter,sans-serif;box-sizing:border-box;"
-                                onfocus="this.style.borderColor='#f59e0b'" onblur="this.style.borderColor='#e2e8f0'">
-                        </div>
-                    </div>
-                    <div style="display:flex;gap:0.75rem;margin-top:0.5rem;">
-                        <button onclick="closeAbwesenheitModal()"
-                            style="flex:1;padding:0.875rem;border-radius:0.875rem;border:2px solid #e2e8f0;background:white;font-weight:900;font-size:11px;text-transform:uppercase;cursor:pointer;color:#64748b;font-family:Inter,sans-serif;">
-                            Abbrechen
-                        </button>
-                        <button onclick="confirmAbwesenheit()"
-                            style="flex:1;padding:0.875rem;border-radius:0.875rem;border:none;background:#f59e0b;color:white;font-weight:900;font-size:11px;text-transform:uppercase;cursor:pointer;box-shadow:0 4px 15px rgba(245,158,11,0.4);font-family:Inter,sans-serif;">
-                            ✓ Speichern
-                        </button>
-                    </div>
-                </div>
-            `;
-            document.body.appendChild(overlay);
-            selectAbwTyp('Ferien');
-            setTimeout(() => document.getElementById('abw-name')?.focus(), 100);
-        }
-
-        window.selectAbwTyp = (typ) => {
-            document.getElementById('abw-typ-value').value = typ;
-            document.querySelectorAll('.abw-typ-btn').forEach(btn => {
-                const c = ABWESENHEIT_COLORS[btn.dataset.typ] || { border: '#e2e8f0', bg: '#f8fafc', text: '#475569' };
-                if (btn.dataset.typ === typ) {
-                    btn.style.borderColor = c.border;
-                    btn.style.background = c.bg;
-                    btn.style.color = c.text;
-                    btn.style.boxShadow = `0 4px 12px ${c.border}66`;
-                    btn.style.transform = 'scale(1.04)';
-                } else {
-                    btn.style.borderColor = '#e2e8f0';
-                    btn.style.background = '#f8fafc';
-                    btn.style.color = '#475569';
-                    btn.style.boxShadow = 'none';
-                    btn.style.transform = 'scale(1)';
-                }
-            });
-        };
-
-        window.closeAbwesenheitModal = () => { document.getElementById('abwesenheit-modal-overlay')?.remove(); };
-
-        window.confirmAbwesenheit = async () => {
-            const name = document.getElementById('abw-name')?.value.trim();
-            const typ  = document.getElementById('abw-typ-value')?.value || 'Ferien';
-            const von  = document.getElementById('abw-von')?.value;
-            const bis  = document.getElementById('abw-bis')?.value;
-
-            if (!name) {
-                const inp = document.getElementById('abw-name');
-                inp.style.borderColor = '#ef4444';
-                inp.focus();
-                return;
-            }
-            if (!von || !bis) { showStatus("DATUM FEHLT!", "error"); return; }
-            if (bis < von) { showStatus("'BIS' MUSS NACH 'VON' SEIN!", "error"); return; }
-
-            closeAbwesenheitModal();
-            showStatus("SPEICHERE...", "info");
-            try {
-                const id = `${name.toLowerCase().replace(/\s+/g,'_')}__${von}__${bis}__${Date.now()}`;
-                await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'kalender_abwesenheiten', id), {
-                    name: name.toUpperCase(),
-                    typ,
-                    von,
-                    bis,
-                    createdAt: new Date().toISOString()
-                });
-                showStatus(`✅ ${typ.toUpperCase()} FÜR ${name.toUpperCase()} GESPEICHERT`, "success");
-            } catch(e) { console.error(e); showStatus("FEHLER BEIM SPEICHERN", "error"); }
-        };
-
-        window.deleteAbwesenheit = async (id, event) => {
-            if (event) { event.preventDefault(); event.stopPropagation(); }
-            if (!confirm("Abwesenheit löschen?")) return;
-            try {
-                await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'kalender_abwesenheiten', id));
-                showStatus("ABWESENHEIT ENTFERNT", "info");
-            } catch(e) { showStatus("FEHLER", "error"); }
-        };
-
-        // ════════════════════════════════════════════════
-        // ABWESENHEIT BANNERS — als erste Zeile im work-week-grid
-        // Auf Desktop: grid-column 1/-1, dann Flex mit exakt gleichen
-        // Verhältnissen wie die Spalten (1fr Zeitspalte + 5×2fr Tage)
-        // ════════════════════════════════════════════════
-
-        function renderAbwesenheitBanners(monday, isMobile, gridContainer) {
-            // Alten Banner-Row entfernen falls vorhanden
-            const oldRow = document.getElementById('abw-banner-row');
-            if (oldRow) oldRow.remove();
-
-            // Legacy-Container ausblenden (nicht mehr genutzt)
-            const legacyCont = document.getElementById('abwesenheit-banner-container');
-            if (legacyCont) legacyCont.style.display = 'none';
-
-            const weekDays = [];
-            for(let i = 0; i < 5; i++) {
-                const d = new Date(monday);
-                d.setDate(monday.getDate() + i);
-                weekDays.push(d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'));
-            }
-
-            const relevantAbw = allAbwesenheiten.filter(a => {
-                return a.von <= weekDays[4] && a.bis >= weekDays[0];
-            });
-
-            if (relevantAbw.length === 0) return;
-
-            if (isMobile) {
-                // Mobile: kompakte Liste VOR den Tageskarten in gridContainer
-                const wrapper = document.createElement('div');
-                wrapper.id = 'abw-banner-row';
-                wrapper.style.cssText = 'padding:0.75rem 0.75rem 0;';
-                relevantAbw.forEach(a => {
-                    const c = ABWESENHEIT_COLORS[a.typ] || ABWESENHEIT_COLORS['Frei'];
-                    const vonFmt = new Date(a.von + 'T00:00').toLocaleDateString('de-DE', {day:'2-digit', month:'2-digit'});
-                    const bisFmt = new Date(a.bis + 'T00:00').toLocaleDateString('de-DE', {day:'2-digit', month:'2-digit'});
-                    const sameDay = a.von === a.bis;
-                    const banner = document.createElement('div');
-                    banner.style.cssText = `display:flex;align-items:center;justify-content:space-between;padding:0.6rem 1rem;margin-bottom:0.4rem;border-radius:0.875rem;border:2px solid ${c.border};background:${c.bg};`;
-                    banner.innerHTML = `
-                        <div style="display:flex;align-items:center;gap:0.6rem;">
-                            <div style="width:8px;height:8px;border-radius:50%;background:${c.dot};flex-shrink:0;"></div>
-                            <span style="font-size:12px;font-weight:900;text-transform:uppercase;color:${c.text};font-family:Inter,sans-serif;">${a.name}</span>
-                            <span style="font-size:10px;font-weight:700;color:${c.text};opacity:0.75;font-family:Inter,sans-serif;">${a.typ}</span>
-                        </div>
-                        <div style="display:flex;align-items:center;gap:0.5rem;">
-                            <span style="font-size:10px;font-weight:900;color:${c.text};font-family:Inter,sans-serif;">${sameDay ? vonFmt : vonFmt + ' – ' + bisFmt}</span>
-                            <button onclick="deleteAbwesenheit('${a.id}', event)" style="width:28px;height:28px;border-radius:7px;border:none;cursor:pointer;font-size:14px;font-weight:900;background:rgba(0,0,0,0.1);color:${c.text};display:flex;align-items:center;justify-content:center;line-height:1;">×</button>
-                        </div>`;
-                    wrapper.appendChild(banner);
-                });
-                // Als erstes Kind einfügen
-                gridContainer.insertBefore(wrapper, gridContainer.firstChild);
-
-            } else {
-                // Desktop: Volle Zeile im Grid (grid-column: 1 / -1)
-                // Innen: Flexbox mit denselben Proportionen wie das Grid
-                // Zeitspalte = flex:1, jede Tagesspalte = flex:2  (entspricht 1fr vs 2fr)
-                const bannerRow = document.createElement('div');
-                bannerRow.id = 'abw-banner-row';
-                // grid-column: 1 / -1 → überspannt alle 11 Spalten
-                bannerRow.style.cssText = 'grid-column: 1 / -1; display:flex; border-bottom:2px solid #e2e8f0; background:#fff;';
-
-                // Zeitspalte-Platzhalter (flex:1 = 1 Anteil)
-                const timeSpacer = document.createElement('div');
-                timeSpacer.style.cssText = 'flex:1; background:#f8fafc; border-right:1px solid #e2e8f0; min-height:8px; flex-shrink:0;';
-                bannerRow.appendChild(timeSpacer);
-
-                // 5 Tagesspalten (flex:2 = 2 Anteile je → identisch zu col-span-2 in 11-Spalten-Grid)
-                for (let i = 0; i < 5; i++) {
-                    const dayStr = weekDays[i];
-                    const dayAbw = relevantAbw.filter(a => a.von <= dayStr && a.bis >= dayStr);
-
-                    const dayCol = document.createElement('div');
-                    dayCol.style.cssText = `flex:2; padding:4px; border-right:1px solid #f1f5f9; min-height:${dayAbw.length > 0 ? (dayAbw.length * 32 + 8) : 8}px; flex-shrink:0;`;
-
-                    dayAbw.forEach(a => {
-                        const c = ABWESENHEIT_COLORS[a.typ] || ABWESENHEIT_COLORS['Frei'];
-                        const pill = document.createElement('div');
-                        pill.style.cssText = `display:flex;align-items:center;justify-content:space-between;gap:4px;padding:4px 8px;border-radius:7px;margin-bottom:3px;background:${c.bg};border:1.5px solid ${c.border};`;
-                        pill.innerHTML = `
-                            <div style="display:flex;align-items:center;gap:5px;min-width:0;flex:1;overflow:hidden;">
-                                <div style="width:7px;height:7px;border-radius:50%;background:${c.dot};flex-shrink:0;"></div>
-                                <span style="font-size:10px;font-weight:900;text-transform:uppercase;color:${c.text};font-family:Inter,sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${a.name}</span>
-                                <span style="font-size:9px;font-weight:700;color:${c.text};opacity:0.7;font-family:Inter,sans-serif;flex-shrink:0;">${a.typ}</span>
-                            </div>
-                            <button onclick="deleteAbwesenheit('${a.id}', event)" style="width:20px;height:20px;border-radius:5px;border:none;cursor:pointer;font-size:11px;font-weight:900;background:rgba(0,0,0,0.1);color:${c.text};flex-shrink:0;display:flex;align-items:center;justify-content:center;line-height:1;">×</button>`;
-                        dayCol.appendChild(pill);
-                    });
-
-                    bannerRow.appendChild(dayCol);
-                }
-
-                // Als ERSTES Kind im Grid einfügen (vor Zeitspalte und Tagesspalten)
-                gridContainer.insertBefore(bannerRow, gridContainer.firstChild);
-            }
-        }
-
-        // ════════════════════════════════════════════════
-        // KALENDER RENDER — NUR Grid, Banners separat
-        // ════════════════════════════════════════════════
-
-        function renderWorkWeek() {
-            const container = document.getElementById('work-week-grid');
-            const weekLabel = document.getElementById('week-label');
-            if(!container) return;
-            container.innerHTML = '';
-            const monday = getMonday(new Date(currentWeekStart));
-            const friday = new Date(monday); friday.setDate(monday.getDate() + 4);
-            weekLabel.innerText = `KW ${getWeekNumber(monday)} · ${monday.toLocaleDateString('de-DE', {day:'2-digit', month:'2-digit'})}–${friday.toLocaleDateString('de-DE', {day:'2-digit', month:'2-digit'})}`;
-
-            const isMobile = window.innerWidth < 768;
-
-            if (isMobile) {
-                for(let i = 0; i < 5; i++) {
-                    const dayDate = new Date(monday); dayDate.setDate(monday.getDate() + i);
-                    const dayStr = dayDate.getFullYear() + "-" + String(dayDate.getMonth() + 1).padStart(2, '0') + "-" + String(dayDate.getDate()).padStart(2, '0');
-                    const isToday = new Date().toDateString() === dayDate.toDateString();
-                    const dayProjects = allProjects.filter(p => p.datum && p.datum.split('T')[0] === dayStr);
-
-                    const dayCard = document.createElement('div');
-                    dayCard.className = `mb-3 rounded-2xl overflow-hidden border ${isToday ? 'border-blue-500' : 'border-slate-200'}`;
-
-                    const header = document.createElement('div');
-                    header.className = `flex items-center justify-between px-4 py-3 ${isToday ? 'bg-blue-600' : 'bg-slate-100'}`;
-                    header.innerHTML = `
-                        <span class="font-black uppercase text-sm ${isToday ? 'text-white' : 'text-slate-900'}">
-                            ${dayDate.toLocaleDateString('de-DE', {weekday: 'long'})}
-                        </span>
-                        <span class="font-black text-sm ${isToday ? 'text-blue-200' : 'text-slate-500'}">
-                            ${dayDate.getDate()}.${dayDate.getMonth()+1}.
-                        </span>
-                    `;
-                    dayCard.appendChild(header);
-
-                    if (dayProjects.length === 0) {
-                        const empty = document.createElement('div');
-                        empty.className = "px-4 py-3 text-[10px] font-black text-slate-400 uppercase italic bg-white";
-                        empty.innerText = "Keine Termine";
-                        dayCard.appendChild(empty);
-                    } else {
-                        dayProjects.forEach(p => {
-                            const timeParts = (p.datum || '').split('T');
-                            const timeStr = timeParts.length > 1 ? timeParts[1].substring(0,5) : '';
-                            const prevDone = allSnapshots.filter(s => s.projektId === p.id);
-                            const folgennr = prevDone.length;
-                            const isService = (p.auftragsart === 'Service'); // NEU: Service-Aufträge farblich abheben
-                            const entry = document.createElement('div');
-                            entry.className = `px-3 py-2.5 border-t flex items-center gap-2 ${isService ? 'border-violet-100 bg-violet-50 active:bg-violet-100' : 'border-slate-100 bg-white active:bg-blue-50'}`;
-                            entry.dataset.label = p.id;
-                            entry.innerHTML = `
-                                <div class="w-2 h-2 rounded-full ${isService ? 'bg-violet-500' : 'bg-blue-500'} flex-shrink-0"></div>
-                                <div class="flex-1 min-w-0" onclick="loadProjectData('${p.id}')">
-                                    <div class="flex items-center gap-1.5">
-                                        <div class="font-black text-[12px] uppercase italic truncate ${isService ? 'text-violet-700' : 'text-blue-600'}">${p.id}</div>
-                                        ${isService ? `<span style="background:#7c3aed;color:white;font-size:8px;font-weight:900;padding:1px 6px;border-radius:999px;flex-shrink:0;letter-spacing:0.5px;">SERVICE</span>` : ''}
-                                        ${folgennr > 0 ? `<span style="background:#f59e0b;color:white;font-size:9px;font-weight:900;padding:1px 6px;border-radius:999px;flex-shrink:0;">#${folgennr+1}</span>` : ''}
-                                    </div>
-                                    <div class="text-[10px] font-bold truncate text-slate-600">${p.adresse || '–'}</div>
-                                </div>
-                                <div class="flex items-center gap-1.5 flex-shrink-0">
-                                    <span class="text-[9px] font-black text-slate-400">${timeStr}</span>
-                                    <button onclick="markDoneProject('${p.id}', '${p.datum}', event)"
-                                        style="min-width:36px;height:36px;border-radius:10px;border:none;cursor:pointer;font-size:14px;font-weight:900;font-family:Inter,sans-serif;display:flex;align-items:center;justify-content:center;${isService ? 'background:#f5f3ff;color:#7c3aed;' : 'background:#f0f9ff;color:#2563eb;'}"
-                                        title="Als erledigt markieren">✓</button>
-                                </div>
-                            `;
-                            dayCard.appendChild(entry);
-                        });
-                        allSnapshots.filter(s => s.datum && s.datum.split('T')[0] === dayStr).forEach(s => {
-                            const timeParts = (s.datum || '').split('T');
-                            const timeStr = timeParts.length > 1 ? timeParts[1].substring(0,5) : '';
-                            const snapshotId = s.projektId + '__' + s.datum.replace(/[:.]/g, '-');
-                            const entry = document.createElement('div');
-                            entry.className = "px-3 py-2.5 border-t border-green-100 flex items-center gap-2 bg-green-50";
-                            entry.dataset.label = s.projektId;
-                            entry.innerHTML = `
-                                <div class="w-2 h-2 rounded-full bg-green-500 flex-shrink-0"></div>
-                                <div class="flex-1 min-w-0">
-                                    <div class="flex items-center gap-1.5">
-                                        <div class="font-black text-[12px] uppercase italic truncate text-green-700 line-through">${s.projektId}</div>
-                                        <span style="background:#16a34a;color:white;font-size:9px;font-weight:900;padding:1px 6px;border-radius:999px;flex-shrink:0;">#${s.einsatzNr}</span>
-                                    </div>
-                                    <div class="text-[10px] font-bold truncate text-green-700">${s.adresse || '–'}</div>
-                                    <div class="text-[9px] font-black text-green-600 uppercase">✅ ${s.erledigtVon}${s.kunde ? ' · ' + s.kunde : ''}</div>
-                                </div>
-                                <div class="flex items-center gap-1.5 flex-shrink-0">
-                                    <span class="text-[9px] font-black text-slate-400">${timeStr}</span>
-                                    <button onclick="markDone('${snapshotId}', event)"
-                                        style="min-width:36px;height:36px;border-radius:10px;border:none;cursor:pointer;font-size:14px;font-weight:900;font-family:Inter,sans-serif;display:flex;align-items:center;justify-content:center;background:#dcfce7;color:#16a34a;"
-                                        title="Eintrag entfernen">↩</button>
-                                </div>
-                            `;
-                            dayCard.appendChild(entry);
-                        });
-                    }
-                    container.appendChild(dayCard);
-                }
-            } else {
-                // Desktop Grid: NUR Zeitspalte + 5 Tagesspalten (kein Banner mehr hier!)
-                const timeCol = document.createElement('div');
-                timeCol.className = "col-span-1 border-r border-slate-200 mt-12 bg-slate-50";
-                for(let h = 7; h <= 19; h++) {
-                    const hour = document.createElement('div');
-                    hour.className = "h-[80px] text-[10px] font-black text-slate-400 pr-4 text-right border-t border-slate-100 flex items-start justify-end pt-1";
-                    hour.innerText = `${h}:00`;
-                    timeCol.appendChild(hour);
-                }
-                container.appendChild(timeCol);
-
-                for(let i = 0; i < 5; i++) {
-                    const dayDate = new Date(monday); dayDate.setDate(monday.getDate() + i);
-                    const dayStr = dayDate.getFullYear() + "-" + String(dayDate.getMonth() + 1).padStart(2, '0') + "-" + String(dayDate.getDate()).padStart(2, '0');
-                    const dayCol = document.createElement('div');
-                    dayCol.className = "col-span-2 relative min-h-[1040px] border-r border-slate-100 bg-white/50";
-                    const isToday = new Date().toDateString() === dayDate.toDateString();
-                    dayCol.innerHTML = `<div class="h-12 text-center flex flex-col justify-center border-b border-slate-200 sticky top-0 z-30 ${isToday ? 'bg-blue-600' : 'bg-slate-100'}"><span class="text-[9px] font-black uppercase ${isToday ? 'text-blue-100' : 'text-slate-500'}">${dayDate.toLocaleDateString('de-DE', {weekday: 'short'})}</span><span class="text-xs font-black ${isToday ? 'text-white' : 'text-slate-900'}">${dayDate.getDate()}.${dayDate.getMonth()+1}.</span></div>`;
-                    for(let h = 7; h <= 19; h++) {
-                        const slot = document.createElement('div');
-                        slot.className = "h-[80px] border-t border-slate-100 w-full";
-                        dayCol.appendChild(slot);
-                    }
-                    allProjects.filter(p => p.datum && p.datum.split('T')[0] === dayStr).forEach(p => {
-                        const timeParts = p.datum.split('T');
-                        if (timeParts.length < 2) return;
-                        const [hours, minutes] = timeParts[1].split(':');
-                        const hNum = parseInt(hours); const mNum = parseInt(minutes);
-                        if(hNum >= 7 && hNum < 20) {
-                            const topPos = ((hNum - 7) * 80) + (mNum / 60 * 80) + 48;
-                            const prevDone = allSnapshots.filter(s => s.projektId === p.id);
-                            const folgennr = prevDone.length;
-                            const isService = (p.auftragsart === 'Service'); // NEU: Service-Aufträge farblich abheben
-                            const entry = document.createElement('div');
-                            entry.className = `absolute left-1 right-1 p-2 rounded-xl shadow-lg z-20 overflow-hidden flex flex-col justify-between hover:shadow-xl transition-all border-2 ${isService ? 'bg-violet-50 border-violet-500' : 'bg-white border-blue-500'}`;
-                            entry.style.top = `${topPos}px`;
-                            entry.style.height = "76px";
-                            entry.dataset.label = p.id;
-                            entry.innerHTML = `
-                                <div class="flex justify-between items-start gap-1 cursor-pointer">
-                                    <div class="flex items-center gap-1 min-w-0">
-                                        <span class="text-[10px] font-black truncate uppercase italic ${isService ? 'text-violet-700' : 'text-blue-600'}">${p.id}</span>
-                                        ${isService ? `<span style="background:#7c3aed;color:white;font-size:7px;font-weight:900;padding:1px 4px;border-radius:999px;flex-shrink:0;letter-spacing:0.3px;">SERVICE</span>` : ''}
-                                        ${folgennr > 0 ? `<span style="background:#f59e0b;color:white;font-size:8px;font-weight:900;padding:1px 5px;border-radius:999px;flex-shrink:0;">#${folgennr+1}</span>` : ''}
-                                    </div>
-                                    <span class="text-[8px] font-black text-slate-400 flex-shrink-0">${hours}:${minutes}</span>
-                                </div>
-                                <div class="text-[9px] font-bold truncate text-slate-700 cursor-pointer">${p.adresse || '...'}</div>
-                                <div class="flex items-center justify-end">
-                                    <button onclick="markDoneProject('${p.id}', '${p.datum}', event)"
-                                        style="padding:2px 7px;border-radius:6px;border:none;cursor:pointer;font-size:9px;font-weight:900;text-transform:uppercase;font-family:Inter,sans-serif;${isService ? 'background:#f5f3ff;color:#7c3aed;' : 'background:#eff6ff;color:#2563eb;'}">
-                                        ✓ Erledigt
-                                    </button>
-                                </div>
-                            `;
-                            entry.addEventListener('click', (e) => { if (!e.target.closest('button')) loadProjectData(p.id); });
-                            dayCol.appendChild(entry);
-                        }
-                    });
-                    allSnapshots.filter(s => s.datum && s.datum.split('T')[0] === dayStr).forEach(s => {
-                        const timeParts = s.datum.split('T');
-                        if (timeParts.length < 2) return;
-                        const [hours, minutes] = timeParts[1].split(':');
-                        const hNum = parseInt(hours); const mNum = parseInt(minutes);
-                        if(hNum >= 7 && hNum < 20) {
-                            const topPos = ((hNum - 7) * 80) + (mNum / 60 * 80) + 48;
-                            const snapshotId = s.projektId + '__' + s.datum.replace(/[:.]/g, '-');
-                            const entry = document.createElement('div');
-                            entry.className = "absolute left-1 right-1 bg-green-50 border-2 border-green-400 p-2 rounded-xl shadow-lg z-20 overflow-hidden flex flex-col justify-between hover:shadow-xl transition-all";
-                            entry.style.top = `${topPos}px`;
-                            entry.style.minHeight = "76px";
-                            entry.style.height = "auto";
-                            entry.dataset.label = s.projektId;
-                            entry.innerHTML = `
-                                <div class="flex justify-between items-start gap-1">
-                                    <div class="flex items-center gap-1 min-w-0">
-                                        <span class="text-[10px] font-black truncate uppercase italic text-green-700 line-through">${s.projektId}</span>
-                                        <span style="background:#16a34a;color:white;font-size:8px;font-weight:900;padding:1px 5px;border-radius:999px;flex-shrink:0;">#${s.einsatzNr}</span>
-                                    </div>
-                                    <span class="text-[8px] font-black text-slate-400 flex-shrink-0">${hours}:${minutes}</span>
-                                </div>
-                                <div class="text-[8px] font-bold text-green-700 truncate">${s.adresse || s.kunde || '–'}</div>
-                                <div class="text-[8px] font-black text-green-600 uppercase truncate">✅ ${s.erledigtVon}${s.kunde ? ' · ' + s.kunde : ''}</div>
-                                <div class="flex items-center justify-end">
-                                    <button onclick="markDone('${snapshotId}', event)"
-                                        style="padding:2px 7px;border-radius:6px;border:none;cursor:pointer;font-size:9px;font-weight:900;text-transform:uppercase;font-family:Inter,sans-serif;background:#dcfce7;color:#16a34a;">
-                                        ↩ Entfernen
-                                    </button>
-                                </div>
-                            `;
-                            dayCol.appendChild(entry);
-                        }
-                    });
-                    container.appendChild(dayCol);
-                }
-            }
-
-            // Banner NACH dem Grid-Aufbau einfügen (insertBefore braucht fertige Kinder)
-            renderAbwesenheitBanners(monday, isMobile, container);
-        }
-
-        function getWeekNumber(d) {
-            d = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
-            d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay()||7));
-            const yearStart = new Date(Date.UTC(d.getUTCFullYear(),0,1));
-            return Math.ceil((((d - yearStart) / 86400000) + 1)/7);
-        }
-
-        function updateEtageStyle(cb) {
-            const label = cb.closest('.etage-label');
-            if(!label) return;
-            if(cb.checked) {
-                label.classList.add('border-blue-500', 'text-blue-600', 'bg-blue-50');
-                label.classList.remove('border-slate-100', 'text-slate-900');
-            } else {
-                label.classList.remove('border-blue-500', 'text-blue-600', 'bg-blue-50');
-                label.classList.add('border-slate-100', 'text-slate-900');
-            }
-        }
-
-        window.handleKalenderSearch = (val) => {
-            const resultsBox = document.getElementById('kalender-search-results');
-            const clearBtn  = document.getElementById('kalender-search-clear');
-            const q = val.trim().toLowerCase();
-
-            if (clearBtn) clearBtn.classList.toggle('hidden', q.length === 0);
-
-            if (q.length < 2) {
-                resultsBox.classList.add('hidden');
-                resultsBox.innerHTML = '';
-                return;
-            }
-
-            const hits = [];
-
-            allProjects.forEach(p => {
-                const score =
-                    (p.id     || '').toLowerCase().includes(q) ||
-                    (p.adresse|| '').toLowerCase().includes(q) ||
-                    (p.kunde  || '').toLowerCase().includes(q) ||
-                    (p.verantwortlicher || '').toLowerCase().includes(q);
-                if (score && p.datum) hits.push({
-                    type: 'projekt',
-                    id: p.id,
-                    label: p.id,
-                    sub: p.adresse || '–',
-                    kunde: p.kunde || '',
-                    datum: p.datum,
-                    erledigt: false
-                });
-            });
-
-            allSnapshots.forEach(s => {
-                const score =
-                    (s.projektId || '').toLowerCase().includes(q) ||
-                    (s.adresse   || '').toLowerCase().includes(q) ||
-                    (s.kunde     || '').toLowerCase().includes(q);
-                if (score && s.datum) hits.push({
-                    type: 'snapshot',
-                    id: s.id,
-                    label: s.projektId,
-                    sub: s.adresse || '–',
-                    kunde: s.kunde || '',
-                    datum: s.datum,
-                    erledigt: true,
-                    erledigtVon: s.erledigtVon,
-                    einsatzNr: s.einsatzNr
-                });
-            });
-
-            hits.sort((a, b) => new Date(a.datum) - new Date(b.datum));
-
-            if (hits.length === 0) {
-                resultsBox.innerHTML = '<div style="padding:1.25rem 1rem;font-size:11px;font-weight:900;text-transform:uppercase;color:#94a3b8;text-align:center;font-family:Inter,sans-serif;">Keine Einträge gefunden</div>';
-                resultsBox.classList.remove('hidden');
-                return;
-            }
-
-            resultsBox.innerHTML = '';
-            hits.forEach((hit) => {
-                const d = new Date(hit.datum);
-                const dateStr = d.toLocaleDateString('de-DE', { weekday:'short', day:'2-digit', month:'2-digit', year:'numeric' });
-                const timeStr = hit.datum.includes('T') ? hit.datum.split('T')[1].substring(0,5) : '';
-
-                const item = document.createElement('div');
-                item.style.cssText = `padding:0.75rem 1rem;cursor:pointer;border-bottom:1px solid #f1f5f9;display:flex;align-items:center;gap:0.75rem;font-family:Inter,sans-serif;`;
-                item.innerHTML = `
-                    <div style="width:36px;height:36px;border-radius:10px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:1rem;
-                        ${hit.erledigt ? 'background:#dcfce7;' : 'background:#eff6ff;'}">
-                        ${hit.erledigt ? '✅' : '📋'}
-                    </div>
-                    <div style="flex:1;min-width:0;">
-                        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
-                            <span style="font-size:12px;font-weight:900;text-transform:uppercase;font-style:italic;
-                                ${hit.erledigt ? 'color:#15803d;text-decoration:line-through;' : 'color:#2563eb;'}">${hit.label}</span>
-                            ${hit.erledigt ? `<span style="background:#16a34a;color:white;font-size:8px;font-weight:900;padding:1px 5px;border-radius:999px;">#${hit.einsatzNr}</span>` : ''}
-                            ${hit.kunde ? `<span style="font-size:9px;font-weight:700;color:#64748b;text-transform:uppercase;">${hit.kunde}</span>` : ''}
-                        </div>
-                        <div style="font-size:10px;font-weight:700;color:#475569;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${hit.sub}</div>
-                        <div style="font-size:9px;font-weight:900;color:#94a3b8;text-transform:uppercase;margin-top:1px;">${dateStr}${timeStr ? ' · ' + timeStr : ''}
-                            ${hit.erledigt ? ' · ✅ ' + hit.erledigtVon : ''}
-                        </div>
-                    </div>
-                    <div style="font-size:1.2rem;color:#cbd5e1;flex-shrink:0;">→</div>
-                `;
-                item.addEventListener('mouseover',  () => item.style.background = '#f8fafc');
-                item.addEventListener('mouseleave', () => item.style.background = '');
-                item.addEventListener('click', () => jumpToCalendarEntry(hit.datum, hit.label));
-                resultsBox.appendChild(item);
-            });
-
-            resultsBox.classList.remove('hidden');
-        };
-
-        window.clearKalenderSearch = () => {
-            const input = document.getElementById('kalender-search');
-            const resultsBox = document.getElementById('kalender-search-results');
-            const clearBtn = document.getElementById('kalender-search-clear');
-            if (input) input.value = '';
-            if (resultsBox) { resultsBox.innerHTML = ''; resultsBox.classList.add('hidden'); }
-            if (clearBtn) clearBtn.classList.add('hidden');
-        };
-
-        function jumpToCalendarEntry(datum, label) {
-            clearKalenderSearch();
-            const targetDate = new Date(datum);
-            currentWeekStart = getMonday(targetDate);
-            renderWorkWeek();
-            setTimeout(() => {
-                const allEntries = document.querySelectorAll('#work-week-grid [data-label]');
-                let found = null;
-                allEntries.forEach(el => {
-                    if (el.dataset.label === label) found = el;
-                });
-                if (found) {
-                    found.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                    found.style.transition = 'box-shadow 0.2s, transform 0.2s';
-                    found.style.boxShadow = '0 0 0 4px #f59e0b, 0 8px 30px rgba(245,158,11,0.4)';
-                    found.style.transform = 'scale(1.04)';
-                    setTimeout(() => {
-                        found.style.boxShadow = '';
-                        found.style.transform = '';
-                    }, 2000);
-                }
-            }, 150);
-        }
-
-        document.addEventListener('click', (e) => {
-            const box = document.getElementById('kalender-search-results');
-            const input = document.getElementById('kalender-search');
-            if (box && !box.contains(e.target) && e.target !== input) {
-                box.classList.add('hidden');
-            }
-        });
-
-        window.switchTab = switchTab;
-        window.changeWeek = (o) => {
-            const d = new Date(currentWeekStart);
-            d.setDate(d.getDate() + (o * 7));
-            currentWeekStart = d;
-            renderWorkWeek();
-        };
-        window.updateEtageStyle = updateEtageStyle;
-        window.openArchiv = () => { document.getElementById('archiv-modal').classList.remove('hidden'); renderArchiv(); };
-        window.closeArchiv = () => { document.getElementById('archiv-modal').classList.add('hidden'); };
-        window.resetForm = () => { if(confirm("Neues Projekt starten? Alle ungespeicherten Daten gehen verloren.")) location.reload(); };
-        window.handleSearch = (el) => renderArchiv(el.value);
-        window.handleFileUpload = handleFileUpload;
-        window.loadProjectData = loadProjectData;
-
-    </script>
-    <style>
-        * { -webkit-tap-highlight-color: transparent; }
-        body {
-            font-family: 'Inter', sans-serif;
-            background-color: #f1f5f9;
-            color: #0f172a;
-            letter-spacing: -0.01em;
-            padding-bottom: env(safe-area-inset-bottom);
-        }
-        .bg-card { background: #ffffff; border-radius: 1.5rem; box-shadow: 0 4px 20px -4px rgba(0,0,0,0.06); }
-        @media (min-width: 768px) {
-            .bg-card { border-radius: 2.5rem; box-shadow: 0 10px 40px -10px rgba(0,0,0,0.05); }
-        }
-        .input-box {
-            background: transparent;
-            border-bottom: 2px solid #e2e8f0;
-            font-weight: 800;
-            text-transform: uppercase;
-            font-size: 0.85rem;
-            padding: 0.75rem 0;
-            width: 100%;
-            outline: none;
-            transition: all 0.2s;
-            font-size: 16px;
-        }
-        .input-box:focus { border-color: #2563eb; }
-        textarea.input-box { border: none; font-size: 14px; }
-        .label-cap { font-size: 9px; font-weight: 900; text-transform: uppercase; color: #94a3b8; letter-spacing: 0.1em; margin-bottom: 0.25rem; display: block; }
-        .radio-tag { cursor: pointer; display: flex; align-items: center; gap: 0.75rem; font-weight: 900; text-transform: uppercase; font-size: 12px; font-style: italic; min-height: 44px; }
-        .radio-tag input { appearance: none; width: 22px; height: 22px; border: 3px solid #cbd5e1; border-radius: 50%; outline: none; flex-shrink: 0; }
-        .radio-tag input:checked { border-color: #2563eb; background: #2563eb; box-shadow: inset 0 0 0 3px #fff; }
-        .etage-label {
-            border: 2px solid #f1f5f9;
-            border-radius: 0.75rem;
-            padding: 0.75rem 0.25rem;
-            text-align: center;
-            cursor: pointer;
-            font-size: 11px;
-            font-weight: 900;
-            text-transform: uppercase;
-            transition: all 0.2s;
-            background: white;
-            color: #0f172a;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            min-height: 44px;
-        }
-        .btn-blue {
-            background: #2563eb;
-            color: #fff;
-            font-weight: 900;
-            text-transform: uppercase;
-            border-radius: 1rem;
-            padding: 1rem;
-            font-size: 0.75rem;
-            letter-spacing: 0.08em;
-            width: 100%;
-            transition: all 0.2s;
-            box-shadow: 0 8px 24px -4px rgba(37,99,235,0.4);
-            min-height: 52px;
-        }
-        .btn-blue:active { transform: scale(0.98); }
-        .btn-white {
-            background: #ffffff;
-            color: #0f172a;
-            font-weight: 900;
-            text-transform: uppercase;
-            border-radius: 1rem;
-            padding: 1rem;
-            font-size: 0.75rem;
-            letter-spacing: 0.08em;
-            width: 100%;
-            border: 2px solid #e2e8f0;
-            min-height: 52px;
-        }
-        .section-num { width: 28px; height: 28px; background: #0f172a; color: white; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-weight: 900; font-size: 11px; font-style: italic; flex-shrink: 0; }
-        .mr-card { border: 2px solid #e2e8f0; border-radius: 1rem; padding: 1rem; margin-bottom: 0.5rem; display: flex; justify-content: space-between; align-items: center; font-weight: 800; font-style: italic; font-size: 11px; text-transform: uppercase; cursor: pointer; transition: 0.2s; min-height: 52px; }
-        .mr-card:hover, .mr-card:active { border-color: #2563eb; }
-        .mr-card.red { color: #ef4444; border-color: #fee2e2; }
-        .mr-card input { appearance: none; width: 20px; height: 20px; border: 2px solid #cbd5e1; border-radius: 50%; outline: none; flex-shrink: 0; }
-        .mr-card input:checked { border-color: #2563eb; background: #2563eb; box-shadow: inset 0 0 0 3px #fff; }
-        .dark-box { background: #0f172a; border-radius: 1.5rem; color: white; padding: 1.25rem; }
-        .blue-box { background: #1e3a8a; border-radius: 1.5rem; color: white; padding: 1.25rem; }
-        @media (min-width: 768px) {
-            .dark-box, .blue-box { border-radius: 2.5rem; padding: 2.5rem; }
-        }
-
-        .bottom-nav { display: none; }
-        @media (max-width: 767px) {
-            .bottom-nav {
-                display: flex;
-                position: fixed;
-                bottom: 0;
-                left: 0;
-                right: 0;
-                background: white;
-                border-top: 1px solid #e2e8f0;
-                z-index: 100;
-                padding-bottom: env(safe-area-inset-bottom);
-            }
-            body { padding-bottom: calc(64px + env(safe-area-inset-bottom)); }
-        }
-        .bottom-nav-btn { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 10px 0; gap: 2px; transition: color 0.2s; font-size: 9px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.05em; }
-
-        .desktop-header-actions { display: none; }
-        @media (min-width: 768px) { .desktop-header-actions { display: flex; } }
-
-        .mobile-header-actions { display: flex; }
-        @media (min-width: 768px) { .mobile-header-actions { display: none; } }
-
-        .desktop-tabs { display: none; }
-        @media (min-width: 768px) { .desktop-tabs { display: flex; } }
-
-        /* WICHTIG: Nur das Work-Week-Grid bekommt das CSS-Grid, nicht der Banner-Container */
-        @media (min-width: 768px) {
-            #work-week-grid { display: grid !important; grid-template-columns: repeat(11, minmax(0, 1fr)); }
-        }
-
-        ::-webkit-scrollbar { width: 4px; height: 4px; }
-        ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
-
-        button, label, a { touch-action: manipulation; }
-
-        /* ===== ZUGANGSCODE GATE ===== */
-        #gate-screen {
-            position: fixed; inset: 0; z-index: 99999;
-            background: #0f172a;
-            display: flex; align-items: center; justify-content: center;
-        }
-        .gate-box {
-            background: #1e293b; border: 1px solid rgba(255,255,255,0.08);
-            border-radius: 1.5rem; padding: 2.5rem 2rem; width: 100%; max-width: 340px;
-            text-align: center; box-shadow: 0 32px 80px rgba(0,0,0,0.4);
-        }
-        .gate-logo { font-size: 1.1rem; font-weight: 900; color: #fff; letter-spacing: -0.02em; text-transform: uppercase; }
-        .gate-logo span { color: #60a5fa; }
-        .gate-sub { font-size: 10px; color: #64748b; text-transform: uppercase; letter-spacing: 0.15em; font-weight: 700; margin: 6px 0 20px; }
-        .gate-dots { display: flex; justify-content: center; gap: 12px; margin-bottom: 8px; }
-        .gate-dot { width: 12px; height: 12px; border-radius: 50%; border: 2px solid #3b82f6; transition: all 0.15s; }
-        .gate-dot.filled { background: #3b82f6; transform: scale(1.1); }
-        .gate-status { font-size: 10px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.08em; min-height: 16px; margin: 8px 0 16px; color: #64748b; }
-        .gate-status.err { color: #f87171; }
-        .gate-status.ok { color: #34d399; }
-        .gate-pad { display: grid; grid-template-columns: repeat(3,1fr); gap: 10px; }
-        .gate-key { padding: 16px; border-radius: 0.875rem; border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.05); color: #fff; font-size: 18px; font-weight: 900; cursor: pointer; transition: all 0.1s; }
-        .gate-key:active { transform: scale(0.94); background: rgba(59,130,246,0.25); }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>PE-SYSTEM — Command Center</title>
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#05070d; --surface:rgba(18,22,34,0.62); --surface-solid:#0d1117;
+  --border:rgba(255,255,255,0.08); --border-soft:rgba(255,255,255,0.05);
+  --text:#f3f5fb; --muted:#7883a0; --muted-2:#4c5670;
+  --accent:#5b8cff; --accent-2:#8b5cf6; --accent-3:#22d3ee;
+  --grad-main: linear-gradient(135deg,#5b8cff 0%,#8b5cf6 55%,#22d3ee 100%);
+  --grad-main-soft: linear-gradient(135deg,rgba(91,140,255,0.18),rgba(139,92,246,0.18));
+  --green:#34d399; --amber:#fbbf24; --rose:#fb7185;
+  --radius-lg:22px; --radius-md:14px; --radius-sm:10px;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;overflow:hidden;-webkit-font-smoothing:antialiased}
+::selection{background:rgba(91,140,255,0.35)}
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.12);border-radius:10px}
+::-webkit-scrollbar-track{background:transparent}
+.display{font-family:'Bebas Neue',sans-serif;letter-spacing:1.5px}
+button,input{font-family:inherit}
+button{cursor:pointer}
+
+/* ══════════════ ANIMATED BACKDROP ══════════════ */
+#backdrop{position:fixed;inset:0;z-index:0;overflow:hidden;background:var(--bg)}
+.blob{position:absolute;border-radius:50%;filter:blur(90px);opacity:0.35;will-change:transform}
+.blob-1{width:640px;height:640px;background:#3b5bdb;top:-220px;left:-160px;animation:float1 22s ease-in-out infinite}
+.blob-2{width:520px;height:520px;background:#8b5cf6;bottom:-200px;right:-140px;animation:float2 26s ease-in-out infinite}
+.blob-3{width:420px;height:420px;background:#22d3ee;top:38%;left:52%;animation:float3 30s ease-in-out infinite}
+@keyframes float1{0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(80px,60px) scale(1.12)}}
+@keyframes float2{0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(-70px,-50px) scale(1.08)}}
+@keyframes float3{0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(-60px,40px) scale(0.9)}}
+#grid-overlay{position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,0.025) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,0.025) 1px,transparent 1px);background-size:46px 46px;mask-image:radial-gradient(ellipse 90% 70% at 50% 0%,black 30%,transparent 100%)}
+
+/* ══════════════ GLASS PRIMITIVES ══════════════ */
+.glass{background:var(--surface);backdrop-filter:blur(22px) saturate(140%);-webkit-backdrop-filter:blur(22px) saturate(140%);border:1px solid var(--border)}
+.glass-card{background:linear-gradient(180deg,rgba(255,255,255,0.05),rgba(255,255,255,0.015));backdrop-filter:blur(24px) saturate(150%);-webkit-backdrop-filter:blur(24px) saturate(150%);border:1px solid var(--border);border-radius:var(--radius-lg);box-shadow:0 20px 60px -20px rgba(0,0,0,0.6),inset 0 1px 0 rgba(255,255,255,0.05)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;border:none;border-radius:var(--radius-sm);font-weight:700;font-size:13px;padding:12px 20px;transition:all .18s cubic-bezier(.4,0,.2,1);letter-spacing:0.01em}
+.btn-primary{background:var(--grad-main);color:#fff;box-shadow:0 8px 24px -6px rgba(91,140,255,0.5)}
+.btn-primary:hover{transform:translateY(-1px);box-shadow:0 12px 28px -6px rgba(91,140,255,0.65)}
+.btn-primary:active{transform:translateY(0)}
+.btn-ghost{background:rgba(255,255,255,0.05);color:var(--text);border:1px solid var(--border)}
+.btn-ghost:hover{background:rgba(255,255,255,0.09)}
+.btn-danger{background:rgba(251,113,133,0.12);color:var(--rose);border:1px solid rgba(251,113,133,0.3)}
+.btn-danger:hover{background:rgba(251,113,133,0.22)}
+.field{width:100%;background:rgba(255,255,255,0.04);border:1px solid var(--border);border-radius:var(--radius-sm);padding:13px 16px;color:var(--text);font-size:14px;font-weight:500;outline:none;transition:all .15s}
+.field:focus{border-color:rgba(91,140,255,0.55);background:rgba(255,255,255,0.06);box-shadow:0 0 0 4px rgba(91,140,255,0.12)}
+.field::placeholder{color:var(--muted-2)}
+.label{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.09em;color:var(--muted);margin-bottom:8px;display:block}
+.pill{display:inline-flex;align-items:center;gap:6px;padding:4px 12px;border-radius:20px;font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:0.06em}
+.pill-pending{background:rgba(251,191,36,0.14);color:var(--amber);border:1px solid rgba(251,191,36,0.35)}
+.pill-approved{background:rgba(52,211,153,0.14);color:var(--green);border:1px solid rgba(52,211,153,0.35)}
+.pill-rejected{background:rgba(251,113,133,0.14);color:var(--rose);border:1px solid rgba(251,113,133,0.35)}
+.pill-admin{background:linear-gradient(135deg,rgba(91,140,255,0.2),rgba(139,92,246,0.2));color:#c7d4ff;border:1px solid rgba(139,92,246,0.4)}
+.spinner{width:34px;height:34px;border:3px solid rgba(255,255,255,0.12);border-top-color:var(--accent);border-radius:50%;animation:spin .75s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.hidden{display:none!important}
+.fade-in{animation:fadeIn .45s cubic-bezier(.2,.8,.2,1) both}
+@keyframes fadeIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+
+/* ══════════════ AUTH SCREEN ══════════════ */
+#auth-screen{position:fixed;inset:0;z-index:500;display:flex;align-items:center;justify-content:center;padding:20px}
+.auth-card{width:100%;max-width:400px;padding:38px 34px}
+.auth-logo{display:flex;align-items:center;gap:10px;justify-content:center;margin-bottom:6px}
+.auth-logo-mark{width:42px;height:42px;border-radius:12px;background:var(--grad-main);display:flex;align-items:center;justify-content:center;font-family:'Bebas Neue',sans-serif;font-size:19px;color:#fff;box-shadow:0 6px 20px -4px rgba(91,140,255,0.6)}
+.auth-title{text-align:center;font-family:'Bebas Neue',sans-serif;font-size:30px;letter-spacing:2px;color:#fff;margin-bottom:2px}
+.auth-sub{text-align:center;font-size:11.5px;color:var(--muted);text-transform:uppercase;letter-spacing:0.14em;font-weight:700;margin-bottom:28px}
+.auth-tabs{display:grid;grid-template-columns:1fr 1fr;background:rgba(255,255,255,0.04);border-radius:12px;padding:4px;margin-bottom:24px;border:1px solid var(--border)}
+.auth-tab{padding:10px;text-align:center;border-radius:9px;font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);transition:all .18s;background:none;border:none}
+.auth-tab.active{background:var(--grad-main);color:#fff;box-shadow:0 4px 14px -3px rgba(91,140,255,0.5)}
+.auth-form{display:flex;flex-direction:column;gap:16px}
+.auth-error{background:rgba(251,113,133,0.1);border:1px solid rgba(251,113,133,0.3);color:#fca5b5;font-size:12.5px;font-weight:600;padding:11px 14px;border-radius:10px;display:none}
+.auth-error.show{display:block}
+.auth-foot{text-align:center;margin-top:20px;font-size:11px;color:var(--muted-2);text-transform:uppercase;letter-spacing:0.08em}
+
+/* ══════════════ PENDING / REJECTED ══════════════ */
+#pending-screen,#rejected-screen{position:fixed;inset:0;z-index:500;display:none;align-items:center;justify-content:center;padding:20px}
+#pending-screen.show,#rejected-screen.show{display:flex}
+.status-card{width:100%;max-width:420px;padding:44px 36px;text-align:center}
+.status-ring{width:76px;height:76px;border-radius:50%;margin:0 auto 22px;display:flex;align-items:center;justify-content:center;font-size:30px;position:relative}
+.status-ring.pending{background:rgba(251,191,36,0.12);border:2px solid rgba(251,191,36,0.4)}
+.status-ring.pending::after{content:'';position:absolute;inset:-6px;border-radius:50%;border:2px solid rgba(251,191,36,0.35);animation:ringPulse 2s ease-in-out infinite}
+.status-ring.rejected{background:rgba(251,113,133,0.12);border:2px solid rgba(251,113,133,0.4)}
+@keyframes ringPulse{0%,100%{opacity:0.4;transform:scale(1)}50%{opacity:0.9;transform:scale(1.08)}}
+.status-title{font-family:'Bebas Neue',sans-serif;font-size:26px;letter-spacing:1.5px;color:#fff;margin-bottom:8px}
+.status-msg{font-size:13px;color:var(--muted);line-height:1.7;margin-bottom:26px}
+.status-email{font-size:11px;color:var(--muted-2);text-transform:uppercase;letter-spacing:0.08em;font-weight:700;margin-bottom:26px}
+
+/* ══════════════ SHELL ══════════════ */
+#shell{position:relative;z-index:1;display:none;height:100vh;width:100vw}
+#shell.show{display:flex}
+
+/* SIDEBAR */
+#sidebar{width:78px;position:relative;display:flex;flex-direction:column;align-items:center;padding:20px 0 18px;flex-shrink:0;transition:width .3s cubic-bezier(.4,0,.2,1);z-index:100;border-right:1px solid var(--border);background:rgba(8,10,18,0.78);min-width:78px;box-sizing:border-box}
+#sidebar.expanded{width:236px;min-width:236px;align-items:stretch;padding:20px 14px 18px}
+.logo-wrap{display:flex;align-items:center;gap:12px;padding:0 0 20px;margin-bottom:16px;border-bottom:1px solid var(--border-soft);cursor:pointer;overflow:hidden;white-space:nowrap;width:100%;min-width:0;box-sizing:border-box}
+#sidebar:not(.expanded) .logo-wrap{justify-content:center;padding:0 0 20px}
+.logo-icon{width:40px;height:40px;flex-shrink:0;background:linear-gradient(135deg,#1976d2,#0d47a1);border-radius:12px;display:flex;align-items:center;justify-content:center;font-family:'Bebas Neue',sans-serif;font-size:16px;color:#fff;letter-spacing:0.5px;box-shadow:0 6px 18px -4px rgba(21,101,192,0.6);position:relative;overflow:hidden}
+.logo-icon::after{content:'';position:absolute;top:0;right:-6px;bottom:0;width:16px;background:#0d47a1;transform:skewX(-18deg)}
+.logo-wordmark{height:22px;width:auto;opacity:0;transition:opacity .2s;flex-shrink:0}
+#sidebar.expanded .logo-wordmark{opacity:1}
+nav.nav-list{display:flex;flex-direction:column;gap:3px;width:100%;flex:1;min-width:0}
+.nav-item{display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:13px;cursor:pointer;transition:all .16s;position:relative;overflow:hidden;white-space:nowrap;color:var(--muted);width:100%;min-width:0;box-sizing:border-box}
+#sidebar:not(.expanded) .nav-item{justify-content:center;padding:11px}
+.nav-item:hover{background:rgba(255,255,255,0.05);color:#dfe4f5}
+.nav-item.active{background:var(--grad-main-soft);color:#fff}
+.nav-item.active::before{content:'';position:absolute;left:0;top:8px;bottom:8px;width:3px;border-radius:3px;background:var(--grad-main)}
+.nav-icon{width:34px;height:34px;border-radius:10px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:16px;transition:transform .16s;position:relative}
+.nav-item:hover .nav-icon{transform:scale(1.08)}
+#sidebar:not(.expanded) .nav-item{position:relative}
+#sidebar:not(.expanded) .nav-item[data-tooltip]:hover::after{
+  content:attr(data-tooltip);position:absolute;left:66px;top:50%;transform:translateY(-50%);
+  background:#151a28;color:#fff;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:0.04em;
+  padding:7px 12px;border-radius:9px;white-space:nowrap;pointer-events:none;z-index:999;
+  border:1px solid var(--border);box-shadow:0 10px 24px -6px rgba(0,0,0,0.5);
+}
+.nav-label{opacity:0;transition:opacity .2s;overflow:hidden;min-width:0;flex:1}
+#sidebar.expanded .nav-label{opacity:1}
+.nav-label-title{font-size:12.5px;font-weight:700}
+.nav-label-sub{font-size:9.5px;color:var(--muted-2);font-weight:600;text-transform:uppercase;letter-spacing:0.04em;margin-top:1px}
+.nav-divider{height:1px;background:var(--border-soft);margin:8px 4px;width:calc(100% - 8px)}
+.sidebar-foot{display:flex;flex-direction:column;gap:8px;width:100%;padding-top:12px;border-top:1px solid var(--border-soft)}
+.sidebar-toggle{width:36px;height:36px;border-radius:11px;background:rgba(255,255,255,0.05);border:1px solid var(--border);color:var(--muted);display:flex;align-items:center;justify-content:center;font-size:15px;align-self:center;transition:all .16s}
+.sidebar-toggle:hover{background:rgba(255,255,255,0.1);color:#fff}
+.user-chip{display:flex;align-items:center;gap:10px;padding:8px;border-radius:12px;background:rgba(255,255,255,0.03);width:100%;min-width:0;box-sizing:border-box;overflow:hidden}
+#sidebar:not(.expanded) .user-chip{justify-content:center;padding:8px 0;background:none}
+.user-avatar{width:32px;height:32px;border-radius:9px;background:var(--grad-main);display:flex;align-items:center;justify-content:center;font-weight:800;font-size:12px;color:#fff;flex-shrink:0}
+.user-meta{overflow:hidden;opacity:0;transition:opacity .2s;flex:1;min-width:0}
+#sidebar.expanded .user-meta{opacity:1}
+.user-name{font-size:11.5px;font-weight:700;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.user-role{font-size:9px;color:var(--muted-2);text-transform:uppercase;letter-spacing:0.05em;font-weight:700}
+
+/* MAIN */
+#main{flex:1;display:flex;flex-direction:column;overflow:hidden;position:relative;min-width:0}
+#topbar{height:60px;display:flex;align-items:center;padding:0 22px;gap:12px;flex-shrink:0;border-bottom:1px solid var(--border);z-index:60}
+.topbar-badge{display:flex;align-items:center;gap:10px;flex:1;min-width:0}
+.topbar-icon{width:32px;height:32px;border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0}
+.topbar-name{font-size:13px;font-weight:800;color:#fff;letter-spacing:0.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.topbar-sub{font-size:9.5px;color:var(--muted-2);font-weight:700;text-transform:uppercase;letter-spacing:0.06em}
+.live-pill{display:flex;align-items:center;gap:6px;background:rgba(52,211,153,0.1);border:1px solid rgba(52,211,153,0.28);border-radius:20px;padding:4px 11px;font-size:9px;font-weight:800;color:var(--green);text-transform:uppercase;letter-spacing:0.06em}
+.live-dot{width:5px;height:5px;border-radius:50%;background:var(--green);animation:dotPulse 1.6s infinite}
+@keyframes dotPulse{0%,100%{box-shadow:0 0 0 0 rgba(52,211,153,0.7)}50%{box-shadow:0 0 8px 3px rgba(52,211,153,0.35)}}
+.icon-btn{width:38px;height:38px;border-radius:11px;background:rgba(255,255,255,0.04);border:1px solid var(--border);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:16px;position:relative;flex-shrink:0;transition:background .16s;color:var(--text)}
+.icon-btn:hover{background:rgba(255,255,255,0.09)}
+.icon-badge{position:absolute;top:-4px;right:-4px;min-width:16px;height:16px;background:var(--rose);border-radius:8px;font-size:8.5px;font-weight:900;color:#fff;display:none;align-items:center;justify-content:center;padding:0 3px}
+.icon-badge.show{display:flex}
+
+/* IFRAME/HOME */
+#iframe-container{flex:1;position:relative;overflow:hidden}
+.app-frame{position:absolute;inset:0;width:100%;height:100%;border:none;opacity:0;pointer-events:none;transition:opacity .25s;background:#fff}
+.app-frame.visible{opacity:1;pointer-events:all}
+#home-screen{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;padding:44px 20px 60px;overflow-y:auto}
+.home-hero{text-align:center;margin-bottom:34px;animation:fadeIn .5s ease both}
+.home-hero-badge{display:inline-flex;align-items:center;gap:8px;padding:6px 16px;border-radius:20px;background:rgba(255,255,255,0.05);border:1px solid var(--border);font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:0.1em;color:var(--muted);margin-bottom:18px}
+.home-title{font-family:'Bebas Neue',sans-serif;font-size:clamp(38px,7vw,58px);letter-spacing:3px;line-height:1;background:linear-gradient(135deg,#fff 30%,#b9c6ff 100%);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+.home-sub{font-size:12px;color:var(--muted);margin-top:10px;font-weight:600}
+.home-logo-mark{display:block;margin:0 auto 18px;height:clamp(38px,6vw,52px);width:auto;filter:drop-shadow(0 10px 30px rgba(21,101,192,0.45))}
+.apps-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;width:100%;max-width:640px;animation:fadeIn .55s .05s ease both}
+.app-card{border-radius:18px;padding:20px 14px 17px;cursor:pointer;transition:all .2s cubic-bezier(.4,0,.2,1);display:flex;flex-direction:column;align-items:center;gap:10px;text-align:center;position:relative;overflow:hidden}
+.app-card:hover{transform:translateY(-5px);border-color:rgba(255,255,255,0.16)}
+.app-card-icon{width:48px;height:48px;border-radius:14px;display:flex;align-items:center;justify-content:center;font-size:21px;box-shadow:0 8px 20px -6px rgba(0,0,0,0.4)}
+.app-card-title{font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:0.05em;color:#e7ebf7;line-height:1.3}
+.app-card-desc{font-size:8.5px;color:var(--muted-2);font-weight:700;text-transform:uppercase;letter-spacing:0.03em}
+.stats-row{display:flex;width:100%;max-width:640px;margin-top:28px;border-radius:18px;padding:18px 0;animation:fadeIn .6s .1s ease both}
+.stat{flex:1;text-align:center}
+.stat-val{font-family:'Bebas Neue',sans-serif;font-size:27px;letter-spacing:1.5px;background:var(--grad-main);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+.stat-lbl{font-size:8.5px;font-weight:800;text-transform:uppercase;letter-spacing:0.1em;color:var(--muted-2);margin-top:3px}
+.stat-sep{width:1px;background:var(--border)}
+
+#error-screen{position:absolute;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:24px;text-align:center}
+#error-screen.show{display:flex}
+#loading-overlay{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;z-index:200;opacity:0;pointer-events:none;transition:opacity .2s;background:var(--bg)}
+#loading-overlay.show{opacity:1;pointer-events:all}
+.loading-text{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:0.25em;color:var(--muted)}
+
+/* PANELS (reminders / admin) shared */
+.side-panel{position:fixed;top:0;right:0;bottom:0;width:390px;max-width:100vw;z-index:800;transform:translateX(100%);transition:transform .32s cubic-bezier(.4,0,.2,1);display:flex;flex-direction:column;border-left:1px solid var(--border)}
+.side-panel.open{transform:translateX(0)}
+.panel-backdrop{position:fixed;inset:0;z-index:790;background:rgba(2,4,10,0.55);backdrop-filter:blur(3px);display:none}
+.panel-backdrop.show{display:block}
+.panel-header{padding:22px 22px 16px;border-bottom:1px solid var(--border-soft);display:flex;align-items:center;gap:12px;flex-shrink:0}
+.panel-header-icon{width:38px;height:38px;border-radius:11px;display:flex;align-items:center;justify-content:center;font-size:17px;flex-shrink:0}
+.panel-title{font-family:'Bebas Neue',sans-serif;font-size:20px;letter-spacing:1.5px;color:#fff}
+.panel-sub{font-size:9.5px;color:var(--muted-2);text-transform:uppercase;letter-spacing:0.06em;font-weight:700;margin-top:1px}
+.panel-close{width:34px;height:34px;border-radius:10px;background:rgba(255,255,255,0.04);border:1px solid var(--border);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:16px;color:var(--muted)}
+.panel-close:hover{background:rgba(255,255,255,0.09);color:#fff}
+.panel-body{flex:1;overflow-y:auto;padding:18px 22px;display:flex;flex-direction:column;gap:18px}
+.panel-tabs{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;background:rgba(255,255,255,0.03);padding:4px;border-radius:12px;border:1px solid var(--border-soft)}
+.panel-tab{padding:9px 4px;text-align:center;border-radius:9px;font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:0.03em;color:var(--muted);background:none;border:none;transition:all .15s}
+.panel-tab.active{background:var(--grad-main);color:#fff}
+
+/* reminder-specific */
+.rp-form{border-radius:16px;padding:16px;display:flex;flex-direction:column;gap:12px}
+.rp-row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.rp-type-toggle{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.rp-type-btn{padding:9px;border-radius:10px;color:var(--muted);font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:0.03em;cursor:pointer;background:rgba(255,255,255,0.03);border:1px solid var(--border-soft)}
+.rp-type-btn.active{background:var(--grad-main-soft);border-color:rgba(139,92,246,0.4);color:#fff}
+.list-empty{font-size:11.5px;color:var(--muted-2);text-align:center;padding:26px 0;font-weight:600}
+.row-card{border-radius:14px;padding:13px 14px;display:flex;align-items:flex-start;gap:11px;border:1px solid var(--border-soft);background:rgba(255,255,255,0.025)}
+.row-icon{font-size:20px;flex-shrink:0;margin-top:1px}
+.row-name{font-size:12.5px;font-weight:700;color:#e7ebf7;margin-bottom:3px;line-height:1.3}
+.row-meta{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:0.04em;color:var(--muted-2)}
+.row-actions{display:flex;gap:6px;flex-shrink:0}
+.row-btn{width:29px;height:29px;border-radius:8px;border:1px solid var(--border-soft);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:13px;background:rgba(255,255,255,0.03);color:var(--text);transition:background .15s}
+.row-btn.danger{background:rgba(251,113,133,0.08);border-color:rgba(251,113,133,0.2);color:var(--rose)}
+.row-btn.danger:hover{background:rgba(251,113,133,0.18)}
+.row-btn.ok{background:rgba(52,211,153,0.1);border-color:rgba(52,211,153,0.25);color:var(--green)}
+.row-btn.ok:hover{background:rgba(52,211,153,0.2)}
+
+/* admin user rows */
+.user-row-avatar{width:36px;height:36px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:13px;color:#fff;flex-shrink:0}
+
+/* ALERT (reminder) */
+#reminder-alert{position:fixed;inset:0;z-index:9999;display:none;align-items:center;justify-content:center;padding:20px;background:rgba(2,4,10,0.65);backdrop-filter:blur(4px)}
+#reminder-alert.show{display:flex;animation:fadeIn .3s ease}
+.alert-box{border-radius:24px;padding:34px 28px;max-width:400px;width:100%;position:relative;text-align:center;border:1px solid rgba(251,191,36,0.35);box-shadow:0 0 60px rgba(251,191,36,0.18)}
+.alert-bell{font-size:44px;animation:bellRing .6s ease-in-out infinite alternate;display:block;margin-bottom:14px}
+@keyframes bellRing{from{transform:rotate(-10deg)}to{transform:rotate(10deg)}}
+.alert-label{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:0.16em;color:var(--amber);margin-bottom:8px}
+.alert-title{font-family:'Bebas Neue',sans-serif;font-size:28px;letter-spacing:1.5px;color:#fff;margin-bottom:8px}
+.alert-time{font-size:10.5px;font-weight:700;color:var(--muted);letter-spacing:0.05em;text-transform:uppercase;margin-bottom:22px}
+.alert-queue{font-size:11px;color:var(--amber);margin-bottom:14px;font-weight:700;display:none}
+.alert-queue.show{display:block}
+
+/* MOBILE */
+#mobile-nav{display:none;position:fixed;bottom:0;left:0;right:0;height:76px;z-index:300;padding-bottom:env(safe-area-inset-bottom);border-top:1px solid var(--border)}
+.mobile-nav-inner{display:flex;height:100%;overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch;scrollbar-width:none;padding:0 4px}
+.mobile-nav-inner::-webkit-scrollbar{display:none}
+.mobile-nav-item{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;padding:8px 13px;cursor:pointer;border-radius:13px;margin:8px 3px;min-width:58px;flex-shrink:0;color:var(--muted);position:relative}
+.mobile-nav-item.active{background:var(--grad-main-soft);color:#fff}
+.mobile-nav-item .m-icon{font-size:19px;line-height:1}
+.mobile-nav-item .m-label{font-size:7.5px;font-weight:800;text-transform:uppercase;letter-spacing:0.03em}
+
+@media(max-width:768px){
+  #sidebar{display:none}
+  #mobile-nav{display:block}
+  #main{padding-bottom:76px}
+  .apps-grid{grid-template-columns:repeat(2,1fr)}
+  .side-panel{width:100vw}
+}
+@media(hover:hover){
+  .app-card:hover .app-card-icon{transform:scale(1.08)}
+}
+</style>
 </head>
 <body>
 
-    <div id="status-msg" class="fixed opacity-0 pointer-events-none z-[1000]"></div>
+<div id="backdrop">
+  <div class="blob blob-1"></div>
+  <div class="blob blob-2"></div>
+  <div class="blob blob-3"></div>
+  <div id="grid-overlay"></div>
+</div>
 
-    <!-- ===== ZUGANGSCODE (GATE) ===== -->
-    <div id="gate-screen">
-        <div class="gate-box">
-            <div class="gate-logo">GIS <span>SYSTEM</span></div>
-            <div class="gate-sub">Zugangscode</div>
-            <div class="gate-dots" id="gate-dots">
-                <div class="gate-dot"></div><div class="gate-dot"></div><div class="gate-dot"></div><div class="gate-dot"></div>
-            </div>
-            <div class="gate-status" id="gate-status">&nbsp;</div>
-            <div class="gate-pad" id="gate-pad">
-                <button class="gate-key" data-k="1">1</button>
-                <button class="gate-key" data-k="2">2</button>
-                <button class="gate-key" data-k="3">3</button>
-                <button class="gate-key" data-k="4">4</button>
-                <button class="gate-key" data-k="5">5</button>
-                <button class="gate-key" data-k="6">6</button>
-                <button class="gate-key" data-k="7">7</button>
-                <button class="gate-key" data-k="8">8</button>
-                <button class="gate-key" data-k="9">9</button>
-                <button class="gate-key" data-k="del">⌫</button>
-                <button class="gate-key" data-k="0">0</button>
-                <button class="gate-key" data-k="clr">✕</button>
-            </div>
-        </div>
+<!-- ═══════════ AUTH SCREEN ═══════════ -->
+<div id="auth-screen">
+  <div class="auth-card glass-card fade-in">
+    <div class="auth-logo"><div class="auth-logo-mark">PE</div></div>
+    <div class="auth-title">PE-SYSTEM</div>
+    <div class="auth-sub">Command Center Zugang</div>
+
+    <div class="auth-tabs">
+      <button class="auth-tab active" id="tab-login" onclick="setAuthMode('login')">Anmelden</button>
+      <button class="auth-tab" id="tab-register" onclick="setAuthMode('register')">Registrieren</button>
     </div>
 
-    <!-- Archiv Modal -->
-    <div id="archiv-modal" class="fixed inset-0 bg-slate-950/95 backdrop-blur-2xl z-[2000] hidden flex items-center justify-center p-0 md:p-4">
-        <div class="bg-slate-900 w-full md:max-w-4xl h-full md:h-auto md:max-h-[90vh] md:rounded-[3rem] border-0 md:border border-white/10 overflow-hidden shadow-2xl flex flex-col">
-            <div class="p-5 md:p-10 border-b border-white/5 flex justify-between items-center flex-shrink-0">
-                <div>
-                    <h3 class="font-black text-white uppercase italic text-xl md:text-2xl tracking-tighter">OBJEKT <span class="text-blue-500">ARCHIV</span></h3>
-                    <p class="text-[9px] font-black text-slate-500 uppercase tracking-widest mt-1">Auto-Löschung nach 50 Tagen</p>
-                </div>
-                <button onclick="closeArchiv()" class="bg-white/5 text-white w-12 h-12 rounded-full flex items-center justify-center text-2xl font-light">&times;</button>
-            </div>
-            <div class="p-4 md:p-8 bg-white/5 flex-shrink-0">
-                <input type="text" id="archiv-search" oninput="handleSearch(this)" placeholder="SUCHEN..." 
-                    class="w-full bg-slate-950 border border-white/10 rounded-2xl py-4 px-5 text-sm font-black text-white outline-none italic uppercase focus:border-blue-500 transition-all" style="font-size:16px;">
-            </div>
-            <div id="archiv-liste" class="flex-1 overflow-y-auto divide-y divide-white/5"></div>
+    <div class="auth-error" id="auth-error"></div>
+
+    <form class="auth-form" id="auth-form" onsubmit="return false;">
+      <div>
+        <label class="label">E-Mail</label>
+        <input type="email" id="auth-email" class="field" placeholder="name@firma.ch" autocomplete="username">
+      </div>
+      <div>
+        <label class="label">Passwort</label>
+        <input type="password" id="auth-password" class="field" placeholder="••••••••" autocomplete="current-password">
+      </div>
+      <button type="submit" class="btn btn-primary" id="auth-submit-btn" style="margin-top:6px;padding:14px" onclick="submitAuth()">Anmelden</button>
+    </form>
+
+    <div class="auth-foot" id="auth-foot">Noch keinen Zugang? Oben auf „Registrieren" tippen</div>
+  </div>
+</div>
+
+<!-- ═══════════ PENDING ═══════════ -->
+<div id="pending-screen">
+  <div class="status-card glass-card fade-in">
+    <div class="status-ring pending">⏳</div>
+    <div class="status-title">Warte auf Freischaltung</div>
+    <div class="status-msg">Dein Zugang wurde erstellt, muss aber zuerst von einem Administrator freigeschaltet werden. Diese Seite aktualisiert sich automatisch, sobald das erledigt ist.</div>
+    <div class="status-email" id="pending-email"></div>
+    <button class="btn btn-ghost" style="width:100%" onclick="doSignOut()">Abmelden</button>
+  </div>
+</div>
+
+<!-- ═══════════ REJECTED ═══════════ -->
+<div id="rejected-screen">
+  <div class="status-card glass-card fade-in">
+    <div class="status-ring rejected">✕</div>
+    <div class="status-title">Zugriff nicht freigegeben</div>
+    <div class="status-msg">Dein Zugang wurde vom Administrator nicht freigeschaltet. Wende dich bei Fragen an deinen Administrator.</div>
+    <div class="status-email" id="rejected-email"></div>
+    <button class="btn btn-ghost" style="width:100%" onclick="doSignOut()">Abmelden</button>
+  </div>
+</div>
+
+<!-- ═══════════ SHELL ═══════════ -->
+<div id="shell">
+  <nav id="sidebar" class="glass">
+    <div class="logo-wrap" onclick="toggleSidebar()">
+      <div class="logo-icon">PE</div>
+      <svg class="logo-wordmark" viewBox="0 0 300 54" xmlns="http://www.w3.org/2000/svg">
+        <rect width="300" height="54" fill="#1565c0" rx="2"/>
+        <rect x="0" y="0" width="300" height="6" fill="#0d47a1"/>
+        <rect x="0" y="48" width="300" height="6" fill="#0d47a1"/>
+        <polygon points="242,6 257,6 300,48 285,48" fill="#0d47a1"/>
+        <text x="14" y="37" font-family="Inter, Arial, sans-serif" font-size="27" font-weight="900" fill="#ffffff" letter-spacing="-0.5">PE Fabrikation</text>
+      </svg>
+    </div>
+    <div class="nav-list">
+      <div class="nav-item active" data-app="home" onclick="openApp('home')">
+        <div class="nav-icon" style="background:rgba(255,255,255,0.06)">🏠</div>
+        <div class="nav-label"><div class="nav-label-title">Home</div><div class="nav-label-sub">Übersicht</div></div>
+      </div>
+      <div class="nav-divider"></div>
+      <div class="nav-item" data-app="ausmesser" data-tooltip="Ausmesser Cloud" onclick="openApp('ausmesser')">
+        <div class="nav-icon" style="background:rgba(251,113,133,0.14)">📐</div>
+        <div class="nav-label"><div class="nav-label-title">Ausmesser Cloud</div><div class="nav-label-sub">PE Fabrikation</div></div>
+      </div>
+      <div class="nav-item" data-app="pe-montage" data-tooltip="Montage Manager" onclick="openApp('pe-montage')">
+        <div class="nav-icon" style="background:rgba(52,211,153,0.14)">🔧</div>
+        <div class="nav-label"><div class="nav-label-title">Montage Manager</div><div class="nav-label-sub">Montage / FA</div></div>
+      </div>
+      <div class="nav-item" data-app="pe-kalender" data-tooltip="Kalender Manager" onclick="openApp('pe-kalender')">
+        <div class="nav-icon" style="background:rgba(91,140,255,0.14)">📅</div>
+        <div class="nav-label"><div class="nav-label-title">Kalender Manager</div><div class="nav-label-sub">Tourendispo Live</div></div>
+      </div>
+      <div class="nav-item" data-app="stunden" data-tooltip="Montage Dispo" onclick="openApp('stunden')">
+        <div class="nav-icon" style="background:rgba(139,92,246,0.14)">⏱️</div>
+        <div class="nav-label"><div class="nav-label-title">Montage Dispo</div><div class="nav-label-sub">Zeiterfassung</div></div>
+      </div>
+      <div class="nav-item" data-app="dispo" data-tooltip="Excel Dispo" onclick="openApp('dispo')">
+        <div class="nav-icon" style="background:rgba(251,191,36,0.14)">🚛</div>
+        <div class="nav-label"><div class="nav-label-title">Excel Dispo</div><div class="nav-label-sub">Tourendispo Pro</div></div>
+      </div>
+      <div class="nav-item" data-app="rechnungen" data-tooltip="Rechnungskontrolle" onclick="openApp('rechnungen')">
+        <div class="nav-icon" style="background:rgba(34,211,238,0.14)">🧾</div>
+        <div class="nav-label"><div class="nav-label-title">Rechnungskontrolle</div><div class="nav-label-sub">Sub-Abgleich</div></div>
+      </div>
+      <div class="nav-divider"></div>
+      <div class="nav-item" data-app="pe-fabrikation" data-tooltip="PE-Fabrikation" onclick="openApp('pe-fabrikation')">
+        <div class="nav-icon" style="background:rgba(251,191,36,0.14)">🏭</div>
+        <div class="nav-label"><div class="nav-label-title">PE-Fabrikation</div><div class="nav-label-sub">Workflow Engine</div></div>
+      </div>
+      <div class="nav-divider"></div>
+      <div class="nav-item" data-tooltip="Erinnerungen" onclick="openReminderPanel()">
+        <div class="nav-icon" style="background:rgba(251,191,36,0.14)" id="sidebar-bell-wrap">🔔
+          <div class="icon-badge" id="sidebar-badge"></div>
         </div>
+        <div class="nav-label"><div class="nav-label-title">Erinnerungen</div><div class="nav-label-sub">Wöchentlich</div></div>
+      </div>
+      <div class="nav-item hidden" id="nav-admin" data-tooltip="Nutzerverwaltung" onclick="openAdminPanel()">
+        <div class="nav-icon" style="background:rgba(139,92,246,0.18)">🛡️</div>
+        <div class="nav-label"><div class="nav-label-title">Nutzerverwaltung</div><div class="nav-label-sub" id="admin-pending-count">0 offen</div></div>
+      </div>
+    </div>
+    <div class="sidebar-foot">
+      <div class="user-chip">
+        <div class="user-avatar" id="user-avatar">?</div>
+        <div class="user-meta">
+          <div class="user-name" id="user-name-label">—</div>
+          <div class="user-role" id="user-role-label">Nutzer</div>
+        </div>
+      </div>
+      <div style="display:flex;gap:6px">
+        <div class="sidebar-toggle" style="flex:1" onclick="toggleSidebar()"><span id="toggle-icon">›</span></div>
+        <div class="sidebar-toggle" style="flex:1" onclick="doSignOut()" title="Abmelden">⏻</div>
+      </div>
+    </div>
+  </nav>
+
+  <div id="main">
+    <div id="topbar" class="glass">
+      <div class="topbar-badge">
+        <div class="topbar-icon" id="topbar-icon" style="background:rgba(255,255,255,0.06)">🏠</div>
+        <div>
+          <div class="topbar-name" id="topbar-name">PE-SYSTEM</div>
+          <div class="topbar-sub" id="topbar-sub">Command Center</div>
+        </div>
+      </div>
+      <button class="icon-btn" onclick="openReminderPanel()" title="Erinnerungen">
+        🔔<div class="icon-badge" id="topbar-bell-badge"></div>
+      </button>
+      <div class="live-pill"><div class="live-dot"></div><span>Live</span></div>
     </div>
 
-    <div class="max-w-6xl mx-auto px-3 py-4 md:px-8 md:py-8 lg:px-12 lg:py-12 space-y-4 md:space-y-10">
-
-        <!-- Header -->
-        <header class="flex justify-between items-center">
-            <div class="flex items-center gap-1">
-                <span class="text-2xl md:text-3xl font-black italic tracking-tighter uppercase text-blue-600">GIS</span>
-                <span class="text-2xl md:text-3xl font-black italic tracking-tighter uppercase text-slate-900">CLOUD</span>
-            </div>
-            <div class="desktop-header-actions gap-4">
-                <button onclick="resetForm()" class="bg-white text-slate-900 border border-slate-200 font-black px-6 py-3 rounded-2xl text-[10px] uppercase italic tracking-widest shadow-sm hover:bg-slate-50 transition-all">Neues Objekt</button>
-                <button onclick="openArchiv()" class="bg-slate-900 text-white font-black px-6 py-3 rounded-2xl text-[10px] uppercase italic tracking-widest">Archiv öffnen</button>
-            </div>
-            <div class="mobile-header-actions gap-2">
-                <button onclick="openArchiv()" class="bg-slate-900 text-white font-black px-4 py-2.5 rounded-xl text-[10px] uppercase italic tracking-widest">📂 Archiv</button>
-            </div>
-        </header>
-
-        <!-- Desktop Tabs -->
-        <div class="desktop-tabs justify-center">
-            <div class="bg-white p-1.5 rounded-2xl flex gap-1 shadow-sm border border-slate-200">
-                <button onclick="switchTab('form-tab')" class="px-8 py-3 rounded-xl text-[10px] font-black uppercase italic tracking-widest transition-all hover:bg-slate-50">📋 Auftrag</button>
-                <button onclick="switchTab('calendar-tab')" class="px-8 py-3 rounded-xl text-[10px] font-black uppercase italic tracking-widest transition-all hover:bg-slate-50">📅 Kalender</button>
-            </div>
+    <div id="iframe-container">
+      <div id="home-screen">
+        <div class="home-hero">
+          <svg class="home-logo-mark" viewBox="0 0 300 54" xmlns="http://www.w3.org/2000/svg">
+            <rect width="300" height="54" fill="#1565c0" rx="2"/>
+            <rect x="0" y="0" width="300" height="6" fill="#0d47a1"/>
+            <rect x="0" y="48" width="300" height="6" fill="#0d47a1"/>
+            <polygon points="242,6 257,6 300,48 285,48" fill="#0d47a1"/>
+            <text x="14" y="37" font-family="Inter, Arial, sans-serif" font-size="27" font-weight="900" fill="#ffffff" letter-spacing="-0.5">PE Fabrikation</text>
+          </svg>
+          <div class="home-hero-badge">✦ Command Center</div>
+          <div class="home-title">PE-SYSTEM</div>
+          <div class="home-sub">Alle Anwendungen an einem Ort — schnell, sicher, verbunden</div>
         </div>
-
-        <!-- Form Tab -->
-        <div id="form-tab" class="tab-content space-y-4 md:space-y-12">
-            <div class="bg-card p-5 md:p-14 space-y-8 md:space-y-16">
-
-                <!-- 00 Status -->
-                <div class="flex flex-col gap-4 border-b border-slate-100 pb-6 md:pb-10">
-                    <div class="flex gap-8">
-                        <label class="radio-tag text-blue-600"><input type="radio" name="art" value="Ausmessen" checked> Ausmessen</label>
-                        <label class="radio-tag text-slate-400"><input type="radio" name="art" value="Service"> Service</label>
-                    </div>
-                    <div class="w-full">
-                        <label class="label-cap">Verantwortlicher</label>
-                        <input type="text" id="verantwortlicher" class="input-box italic" placeholder="NAME">
-                    </div>
-                </div>
-
-                <!-- 01 Projektstamm -->
-                <section>
-                    <div class="flex items-center gap-3 mb-5">
-                        <div class="section-num">01</div>
-                        <h3 class="font-black uppercase italic tracking-tighter text-base md:text-lg">Projektstamm</h3>
-                    </div>
-                    <div class="bg-slate-50 p-5 md:p-10 rounded-2xl md:rounded-[2.5rem] mb-6 border-2 border-slate-100">
-                        <label class="label-cap">Objektbezeichnung / Cloud-ID (Pflichtfeld)</label>
-                        <input type="text" id="projekt_id" 
-                            class="w-full bg-transparent border-none outline-none font-black text-xl md:text-3xl uppercase italic text-blue-600 placeholder:text-slate-200"
-                            placeholder="NAME DES OBJEKTS" style="font-size:clamp(18px,5vw,30px)">
-                        <p class="text-[9px] font-black text-slate-400 uppercase tracking-widest mt-2 italic">
-                            💡 Bei einem geladenen Objekt: Name ändern + speichern = derselbe Auftrag wird umbenannt
-                        </p>
-                    </div>
-                    <div class="grid grid-cols-1 gap-5 md:grid-cols-2 md:gap-x-12 md:gap-y-10">
-                        <div class="flex flex-col"><label class="label-cap">Adresse / Einsatzort</label><input type="text" id="adresse" class="input-box italic" placeholder="STRASSE NR, PLZ ORT"></div>
-                        <div class="flex flex-col"><label class="label-cap">Datum / Zeit</label><input type="datetime-local" id="datum" class="input-box"></div>
-                        <div class="grid grid-cols-2 gap-4">
-                            <div class="flex flex-col"><label class="label-cap">PL Intern</label><input type="text" id="pl_intern" class="input-box italic"></div>
-                            <div class="flex flex-col"><label class="label-cap">Zeichner</label><input type="text" id="zeichner" class="input-box italic"></div>
-                        </div>
-                        <div class="grid grid-cols-2 gap-4">
-                            <div class="flex flex-col"><label class="label-cap">Kunde</label><input type="text" id="kunde" class="input-box italic"></div>
-                            <div class="flex flex-col"><label class="label-cap">PL Extern</label><input type="text" id="pl_extern" class="input-box italic"></div>
-                        </div>
-                        <div class="flex flex-col"><label class="label-cap">Tel. Bauleitung</label><input type="tel" id="tel_bauleitung" class="input-box italic"></div>
-                        <div class="flex flex-col"><label class="label-cap">Tel. Monteur</label><input type="tel" id="tel_monteur" class="input-box italic" placeholder="M: +41..."></div>
-                    </div>
-                </section>
-
-                <!-- 02 & 03 -->
-                <div class="grid grid-cols-1 gap-8 md:grid-cols-2 md:gap-16">
-                    <section>
-                        <div class="flex items-center gap-3 mb-5">
-                            <div class="section-num">02</div>
-                            <h3 class="font-black uppercase italic tracking-tighter text-base md:text-lg">Meterriss</h3>
-                        </div>
-                        <div class="space-y-2">
-                            <label class="mr-card">MR Plaquette <input type="radio" name="mr" value="Vorhanden"></label>
-                            <label class="mr-card">MR Bleistift <input type="radio" name="mr" value="Fehlt"></label>
-                            <label class="mr-card red">Kein Meterriss <input type="radio" name="mr" value="Keiner"></label>
-                        </div>
-                    </section>
-                    <section>
-                        <div class="flex items-center gap-3 mb-5">
-                            <div class="section-num">03</div>
-                            <h3 class="font-black uppercase italic tracking-tighter text-base md:text-lg">Etagen</h3>
-                        </div>
-                        <div class="grid grid-cols-4 gap-2 mb-4">
-                            <script>
-                                const levels = ["UG", "EG", "1.OG", "2.OG", "3.OG", "4.OG", "5.OG", "6.OG", "7.OG", "8.OG", "9.OG", "10.OG"];
-                                levels.forEach(e => {
-                                    document.write(`<label class="etage-label"><input type="checkbox" value="${e}" class="hidden etage-cb" onchange="updateEtageStyle(this)">${e}</label>`);
-                                });
-                            </script>
-                        </div>
-                        <div class="space-y-3">
-                            <label class="flex items-center gap-3 text-[11px] font-black uppercase italic text-slate-500 cursor-pointer min-h-[44px]">
-                                <input type="checkbox" class="w-5 h-5 rounded-md border-2 border-slate-200 checked:bg-blue-600 transition-all flex-shrink-0"> Kunde anvisiert
-                            </label>
-                            <label class="flex items-center gap-3 text-[11px] font-black uppercase italic text-slate-500 cursor-pointer min-h-[44px]">
-                                <input type="checkbox" class="w-5 h-5 rounded-md border-2 border-slate-200 checked:bg-blue-600 transition-all flex-shrink-0"> Polier informiert
-                            </label>
-                        </div>
-                    </section>
-                </div>
-
-                <!-- Info Boxen -->
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-8">
-                    <div class="blue-box">
-                        <label class="label-cap text-blue-200">Büro Infos</label>
-                        <textarea id="interne_infos" class="w-full bg-blue-800/40 border-none outline-none p-4 rounded-xl font-bold text-sm italic mt-3 min-h-[120px] md:min-h-[160px] text-white placeholder:text-blue-400" placeholder="Details für das Büro..." style="font-size:14px;"></textarea>
-                    </div>
-                    <div class="dark-box">
-                        <label class="label-cap text-slate-400">Baustellen-Protokoll</label>
-                        <textarea id="baustellen_protokoll" class="w-full bg-slate-800/50 border-none outline-none p-4 rounded-xl font-bold text-sm italic mt-3 min-h-[120px] md:min-h-[160px] text-white placeholder:text-slate-600" placeholder="Rückmeldung von vor Ort..." style="font-size:14px;"></textarea>
-                    </div>
-                </div>
-
-                <!-- Ausmass Pläne Dropbox -->
-                <section class="bg-slate-950 p-5 md:p-10 rounded-2xl md:rounded-[3rem] shadow-2xl">
-                    <h3 class="font-black italic uppercase text-white text-xl md:text-2xl mb-1 tracking-tighter">AUSMASS <span class="text-blue-500">PLÄNE</span></h3>
-                    <p class="text-[9px] font-black text-slate-500 uppercase tracking-widest mb-6 md:mb-8">
-                        📁 Pläne direkt in der Dropbox öffnen und hochladen
-                    </p>
-                    <a href="https://www.dropbox.com/scl/fo/o5voo76m0al4zje1g1k8b/AFGH4EZTXNRA7qekpi1-IMg?rlkey=5xvi1sym9rod3gh5d6cgrfbk6&st=kb0iba67&dl=0"
-                       target="_blank"
-                       class="flex items-center justify-center gap-4 bg-[#0061FF] hover:bg-[#0052d9] active:bg-[#0045b5] transition-all rounded-2xl p-5 md:p-6 w-full shadow-lg shadow-blue-700/30 group">
-                        <svg class="w-8 h-8 text-white flex-shrink-0" viewBox="0 0 24 24" fill="currentColor">
-                            <path d="M6 2L0 6l6 4-6 4 6 4 6-4-6-4 6-4L6 2zm12 0l-6 4 6 4-6 4 6 4 6-4-6-4 6-4-6-4zm-6 9l-6 4 6 4 6-4-6-4z"/>
-                        </svg>
-                        <div class="text-left">
-                            <div class="text-white font-black uppercase italic tracking-wider text-sm md:text-base">Dropbox Ausmass-Ordner öffnen</div>
-                            <div class="text-blue-200 text-[10px] font-black uppercase tracking-widest mt-0.5">Pläne hochladen &amp; ansehen →</div>
-                        </div>
-                    </a>
-                    <p class="text-[9px] font-black text-slate-600 uppercase tracking-widest mt-4 text-center">
-                        Öffnet direkt den geteilten Ausmass-Ordner in der Dropbox App
-                    </p>
-                </section>
-
-                <!-- Footer Actions -->
-                <div class="flex flex-col gap-3 pt-2 md:pt-10">
-                    <button onclick="saveToCloud()" class="btn-blue flex items-center justify-center gap-3">
-                        💾 DATEN IN CLOUD SICHERN
-                    </button>
-                    <button onclick="window.print()" class="btn-white flex items-center justify-center gap-3">
-                        🖨️ ALS PDF EXPORTIEREN
-                    </button>
-                    <button onclick="resetForm()" class="md:hidden btn-white flex items-center justify-center gap-3 text-slate-500">
-                        ✚ NEUES OBJEKT
-                    </button>
-                </div>
-
-            </div>
+        <div class="apps-grid">
+          <div class="app-card glass" onclick="openApp('ausmesser')">
+            <div class="app-card-icon" style="background:linear-gradient(135deg,rgba(251,113,133,0.28),rgba(251,113,133,0.12))">📐</div>
+            <div><div class="app-card-title">Ausmesser</div><div class="app-card-desc">Cloud</div></div>
+          </div>
+          <div class="app-card glass" onclick="openApp('pe-montage')">
+            <div class="app-card-icon" style="background:linear-gradient(135deg,rgba(52,211,153,0.28),rgba(52,211,153,0.12))">🔧</div>
+            <div><div class="app-card-title">Montage</div><div class="app-card-desc">Manager</div></div>
+          </div>
+          <div class="app-card glass" onclick="openApp('pe-kalender')">
+            <div class="app-card-icon" style="background:linear-gradient(135deg,rgba(91,140,255,0.28),rgba(91,140,255,0.12))">📅</div>
+            <div><div class="app-card-title">Kalender</div><div class="app-card-desc">Touren Live</div></div>
+          </div>
+          <div class="app-card glass" onclick="openApp('stunden')">
+            <div class="app-card-icon" style="background:linear-gradient(135deg,rgba(139,92,246,0.28),rgba(139,92,246,0.12))">⏱️</div>
+            <div><div class="app-card-title">M-Dispo</div><div class="app-card-desc">Zeiterfassung</div></div>
+          </div>
+          <div class="app-card glass" onclick="openApp('dispo')">
+            <div class="app-card-icon" style="background:linear-gradient(135deg,rgba(251,191,36,0.28),rgba(251,191,36,0.12))">🚛</div>
+            <div><div class="app-card-title">Excel Dispo</div><div class="app-card-desc">Touren Pro</div></div>
+          </div>
+          <div class="app-card glass" onclick="openApp('rechnungen')">
+            <div class="app-card-icon" style="background:linear-gradient(135deg,rgba(34,211,238,0.28),rgba(34,211,238,0.12))">🧾</div>
+            <div><div class="app-card-title">Rechnungen</div><div class="app-card-desc">Sub-Abgleich</div></div>
+          </div>
+          <div class="app-card glass" onclick="openApp('pe-fabrikation')">
+            <div class="app-card-icon" style="background:linear-gradient(135deg,rgba(251,191,36,0.28),rgba(251,191,36,0.12))">🏭</div>
+            <div><div class="app-card-title">Fabrikation</div><div class="app-card-desc">Workflow</div></div>
+          </div>
         </div>
-
-        <!-- Calendar Tab -->
-        <div id="calendar-tab" class="tab-content hidden">
-            <div class="bg-card overflow-hidden border border-slate-200">
-
-                <!-- Kalender Header -->
-                <div class="flex justify-between items-center p-4 md:p-6 bg-slate-50 border-b border-slate-200">
-                    <h2 id="week-label" class="text-base md:text-xl font-black italic text-slate-900 tracking-tighter uppercase">KALENDER</h2>
-                    <div class="flex gap-2">
-                        <button onclick="openAbwesenheitModal()"
-                            class="flex items-center gap-1.5 bg-amber-50 border border-amber-200 text-amber-700 font-black px-3 py-2.5 rounded-xl text-[10px] uppercase italic tracking-wider transition-all hover:bg-amber-100"
-                            title="Ferien / Frei eintragen">
-                            <span class="text-base">🏖️</span>
-                            <span class="hidden md:inline">Abwesenheit</span>
-                        </button>
-                        <button onclick="changeWeek(-1)" class="w-11 h-11 bg-white border border-slate-200 rounded-xl text-slate-900 font-bold hover:bg-blue-600 hover:text-white transition-all shadow-sm text-lg">←</button>
-                        <button onclick="changeWeek(1)" class="w-11 h-11 bg-white border border-slate-200 rounded-xl text-slate-900 font-bold hover:bg-blue-600 hover:text-white transition-all shadow-sm text-lg">→</button>
-                    </div>
-                </div>
-
-                <!-- Suchleiste -->
-                <div class="relative p-3 md:p-4 border-b border-slate-200 bg-white">
-                    <div class="relative">
-                        <span class="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 text-base pointer-events-none">🔍</span>
-                        <input type="text" id="kalender-search" oninput="handleKalenderSearch(this.value)" placeholder="ADRESSE, OBJEKT ODER KUNDE SUCHEN..."
-                            style="font-size:16px;"
-                            class="w-full pl-10 pr-10 py-3 bg-slate-50 border-2 border-slate-200 rounded-2xl text-[12px] font-black uppercase italic text-slate-900 outline-none focus:border-blue-500 focus:bg-white transition-all placeholder:text-slate-300 placeholder:not-italic">
-                        <button id="kalender-search-clear" onclick="clearKalenderSearch()" class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 text-xl hidden">×</button>
-                    </div>
-                    <div id="kalender-search-results" class="hidden absolute left-3 right-3 top-full mt-1 bg-white rounded-2xl border border-slate-200 shadow-2xl z-[200] max-h-72 overflow-y-auto"></div>
-                </div>
-
-                <!-- Grid / List — enthält Zeitspalte + Tagesspalten + Banner-Row als erstes Grid-Item -->
-                <div id="work-week-grid" class="p-3 md:p-0 md:overflow-x-auto md:min-w-[1000px] bg-white"></div>
-
-            </div>
+        <div class="stats-row glass-card">
+          <div class="stat"><div class="stat-val">7</div><div class="stat-lbl">Apps</div></div>
+          <div class="stat-sep"></div>
+          <div class="stat"><div class="stat-val" id="stat-users">—</div><div class="stat-lbl">Nutzer</div></div>
+          <div class="stat-sep"></div>
+          <div class="stat"><div class="stat-val">∞</div><div class="stat-lbl">Live</div></div>
+          <div class="stat-sep"></div>
+          <div class="stat"><div class="stat-val" id="clock-val">—</div><div class="stat-lbl">Uhrzeit</div></div>
         </div>
+      </div>
 
+      <div id="error-screen">
+        <div style="font-size:42px">⚠️</div>
+        <div class="status-title">Zugriff blockiert</div>
+        <div class="status-msg" style="max-width:340px">Diese App lässt sich nicht einbetten. Öffne sie direkt in einem neuen Tab:</div>
+        <a id="error-link" href="#" target="_blank" class="btn btn-primary">↗ App öffnen</a>
+        <button class="btn btn-ghost" onclick="hideError()">← Zurück zur Übersicht</button>
+      </div>
+      <div id="loading-overlay"><div class="spinner"></div><div class="loading-text">App wird geladen...</div></div>
     </div>
+  </div>
+</div>
 
-    <!-- Bottom Navigation (mobile only) -->
-    <nav class="bottom-nav">
-        <button id="nav-form-tab" onclick="switchTab('form-tab')" class="bottom-nav-btn text-blue-600">
-            <span class="text-xl">📋</span>
-            <span>Auftrag</span>
-        </button>
-        <button id="nav-calendar-tab" onclick="switchTab('calendar-tab')" class="bottom-nav-btn text-slate-400">
-            <span class="text-xl">📅</span>
-            <span>Kalender</span>
-        </button>
-    </nav>
+<!-- MOBILE NAV -->
+<nav id="mobile-nav" class="glass">
+  <div class="mobile-nav-inner">
+    <div class="mobile-nav-item active" data-app="home" onclick="openApp('home')"><span class="m-icon">🏠</span><span class="m-label">Home</span></div>
+    <div class="mobile-nav-item" data-app="ausmesser" onclick="openApp('ausmesser')"><span class="m-icon">📐</span><span class="m-label">Ausmesser</span></div>
+    <div class="mobile-nav-item" data-app="pe-montage" onclick="openApp('pe-montage')"><span class="m-icon">🔧</span><span class="m-label">Montage</span></div>
+    <div class="mobile-nav-item" data-app="pe-kalender" onclick="openApp('pe-kalender')"><span class="m-icon">📅</span><span class="m-label">Kalender</span></div>
+    <div class="mobile-nav-item" data-app="stunden" onclick="openApp('stunden')"><span class="m-icon">⏱️</span><span class="m-label">M-Dispo</span></div>
+    <div class="mobile-nav-item" data-app="dispo" onclick="openApp('dispo')"><span class="m-icon">🚛</span><span class="m-label">Excel</span></div>
+    <div class="mobile-nav-item" data-app="rechnungen" onclick="openApp('rechnungen')"><span class="m-icon">🧾</span><span class="m-label">Rechn.</span></div>
+    <div class="mobile-nav-item" data-app="pe-fabrikation" onclick="openApp('pe-fabrikation')"><span class="m-icon">🏭</span><span class="m-label">Fabrik</span></div>
+    <div class="mobile-nav-item" onclick="openReminderPanel()"><span class="m-icon">🔔</span><span class="m-label">Erinn.</span><div class="icon-badge" id="mobile-bell-badge" style="top:4px;right:14px"></div></div>
+    <div class="mobile-nav-item hidden" id="mobile-nav-admin" onclick="openAdminPanel()"><span class="m-icon">🛡️</span><span class="m-label">Admin</span></div>
+  </div>
+</nav>
 
+<!-- ═══════════ REMINDER PANEL ═══════════ -->
+<div class="panel-backdrop" id="reminder-backdrop" onclick="closeReminderPanel()"></div>
+<div class="side-panel glass" id="reminder-panel">
+  <div class="panel-header">
+    <div class="panel-header-icon" style="background:rgba(251,191,36,0.14)">🔔</div>
+    <div style="flex:1"><div class="panel-title">Erinnerungen</div><div class="panel-sub">Wöchentlich &amp; monatlich</div></div>
+    <button class="panel-close" onclick="closeReminderPanel()">✕</button>
+  </div>
+  <div class="panel-body">
+    <div class="rp-form glass-card">
+      <div class="label" style="margin-bottom:0;color:var(--accent-3, #22d3ee)">+ Neue Erinnerung</div>
+      <input type="text" id="r-title" class="field" placeholder="z.B. Gipsplatten bestellen" maxlength="80">
+      <div class="rp-type-toggle">
+        <button class="rp-type-btn active" id="r-type-weekly" onclick="setReminderType('weekly')">🗓 Wöchentlich</button>
+        <button class="rp-type-btn" id="r-type-monthly" onclick="setReminderType('monthly')">📅 Monatlich</button>
+      </div>
+      <div id="r-weekly-fields" class="rp-row">
+        <select id="r-day" class="field">
+          <option value="1">Montag</option><option value="2">Dienstag</option><option value="3" selected>Mittwoch</option>
+          <option value="4">Donnerstag</option><option value="5">Freitag</option><option value="6">Samstag</option><option value="0">Sonntag</option>
+        </select>
+        <input type="time" id="r-time" class="field" value="08:00">
+      </div>
+      <div id="r-monthly-fields" class="rp-row" style="display:none">
+        <select id="r-monthday" class="field"></select>
+        <input type="time" id="r-mtime" class="field" value="08:00">
+      </div>
+      <button class="btn btn-primary" onclick="addReminder()">Erinnerung speichern</button>
+    </div>
+    <div>
+      <div class="label" style="margin-bottom:10px">Aktive Erinnerungen</div>
+      <div id="reminder-list" style="display:flex;flex-direction:column;gap:8px">
+        <div class="list-empty" id="reminder-empty">Noch keine Erinnerungen. Füge deine erste hinzu!</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════ ADMIN PANEL ═══════════ -->
+<div class="panel-backdrop" id="admin-backdrop" onclick="closeAdminPanel()"></div>
+<div class="side-panel glass" id="admin-panel">
+  <div class="panel-header">
+    <div class="panel-header-icon" style="background:rgba(139,92,246,0.16)">🛡️</div>
+    <div style="flex:1"><div class="panel-title">Nutzerverwaltung</div><div class="panel-sub">Zugriff freischalten</div></div>
+    <button class="panel-close" onclick="closeAdminPanel()">✕</button>
+  </div>
+  <div class="panel-body">
+    <div class="panel-tabs">
+      <button class="panel-tab active" id="admin-tab-pending" onclick="setAdminTab('pending')">Offen</button>
+      <button class="panel-tab" id="admin-tab-approved" onclick="setAdminTab('approved')">Freigegeben</button>
+      <button class="panel-tab" id="admin-tab-rejected" onclick="setAdminTab('rejected')">Abgelehnt</button>
+    </div>
+    <div id="admin-list" style="display:flex;flex-direction:column;gap:8px">
+      <div class="list-empty" id="admin-empty">Keine Einträge</div>
+    </div>
+  </div>
+</div>
+
+<!-- REMINDER ALERT -->
+<div id="reminder-alert">
+  <div class="alert-box glass-card">
+    <span class="alert-bell">🔔</span>
+    <div class="alert-label">Erinnerung</div>
+    <div class="alert-title" id="alert-title">Gipsplatten bestellen</div>
+    <div class="alert-time" id="alert-time">Mittwoch · 08:00 Uhr</div>
+    <div class="alert-queue" id="alert-queue"></div>
+    <button class="btn btn-primary" style="width:100%;padding:15px" onclick="dismissAlert()">✓ Erledigt — Schliessen</button>
+  </div>
+</div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot, updateDoc, query, orderBy } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyCOG-j-lOx76DAQOXJOFrS1oAYoD7xGVy4",
+  authDomain: "dashboard-pe.firebaseapp.com",
+  projectId: "dashboard-pe",
+  storageBucket: "dashboard-pe.firebasestorage.app",
+  messagingSenderId: "931477684360",
+  appId: "1:931477684360:web:1a42bfbda70de813109f3d"
+};
+const ADMIN_EMAIL = "admin@pe-fabrikation.ch";
+
+const fbApp = initializeApp(firebaseConfig);
+const auth = getAuth(fbApp);
+const db = getFirestore(fbApp);
+const usersCol = collection(db, 'users');
+
+let authMode = 'login';
+let currentUser = null;
+let isAdmin = false;
+let usersUnsub = null;
+let allUsers = [];
+let userDocUnsub = null;
+
+// ══════════════ AUTH UI ══════════════
+window.setAuthMode = (mode) => {
+  authMode = mode;
+  document.getElementById('tab-login').classList.toggle('active', mode === 'login');
+  document.getElementById('tab-register').classList.toggle('active', mode === 'register');
+  document.getElementById('auth-submit-btn').textContent = mode === 'login' ? 'Anmelden' : 'Konto erstellen';
+  document.getElementById('auth-foot').textContent = mode === 'login'
+    ? 'Noch keinen Zugang? Oben auf „Registrieren" tippen'
+    : 'Nach der Registrierung muss ein Administrator deinen Zugang freischalten';
+  hideAuthError();
+};
+
+function showAuthError(msg) {
+  const el = document.getElementById('auth-error');
+  el.textContent = msg;
+  el.classList.add('show');
+}
+function hideAuthError() { document.getElementById('auth-error').classList.remove('show'); }
+
+window.submitAuth = async () => {
+  hideAuthError();
+  const email = document.getElementById('auth-email').value.trim();
+  const password = document.getElementById('auth-password').value;
+  if (!email || !password) { showAuthError('Bitte E-Mail und Passwort ausfüllen.'); return; }
+  const btn = document.getElementById('auth-submit-btn');
+  btn.disabled = true; const oldText = btn.textContent; btn.textContent = 'Bitte warten...';
+  try {
+    await setPersistence(auth, browserLocalPersistence);
+    if (authMode === 'login') {
+      await signInWithEmailAndPassword(auth, email, password);
+    } else {
+      const cred = await createUserWithEmailAndPassword(auth, email, password);
+      await setDoc(doc(db, 'users', cred.user.uid), {
+        email, status: 'pending', createdAt: new Date().toISOString()
+      });
+    }
+  } catch (e) {
+    const map = {
+      'auth/invalid-email': 'Ungültige E-Mail-Adresse.',
+      'auth/email-already-in-use': 'Diese E-Mail ist bereits registriert.',
+      'auth/weak-password': 'Passwort ist zu schwach (mind. 6 Zeichen).',
+      'auth/invalid-credential': 'E-Mail oder Passwort falsch.',
+      'auth/wrong-password': 'E-Mail oder Passwort falsch.',
+      'auth/user-not-found': 'Kein Konto mit dieser E-Mail gefunden.',
+      'auth/too-many-requests': 'Zu viele Versuche. Bitte kurz warten.',
+    };
+    showAuthError(map[e.code] || ('Fehler: ' + e.message));
+  } finally {
+    btn.disabled = false; btn.textContent = oldText;
+  }
+};
+document.getElementById('auth-password').addEventListener('keydown', e => { if (e.key === 'Enter') window.submitAuth(); });
+
+window.doSignOut = async () => {
+  try { await signOut(auth); } catch(e) {}
+};
+
+// ══════════════ AUTH STATE ROUTING ══════════════
+function showOnly(id) {
+  ['auth-screen','pending-screen','rejected-screen'].forEach(x => {
+    const el = document.getElementById(x);
+    if (x === id) { el.style.display = 'flex'; el.classList.add('show'); }
+    else { el.style.display = 'none'; el.classList.remove('show'); }
+  });
+  document.getElementById('shell').classList.toggle('show', id === null);
+}
+
+onAuthStateChanged(auth, async (user) => {
+  if (userDocUnsub) { userDocUnsub(); userDocUnsub = null; }
+  if (usersUnsub) { usersUnsub(); usersUnsub = null; }
+
+  if (!user) {
+    currentUser = null; isAdmin = false;
+    showOnly('auth-screen');
+    return;
+  }
+  currentUser = user;
+
+  if (user.email === ADMIN_EMAIL) {
+    isAdmin = true;
+    try {
+      await setDoc(doc(db, 'users', user.uid), { email: user.email, status: 'approved', role: 'admin', createdAt: new Date().toISOString() }, { merge: true });
+    } catch(e) {}
+    enterApp();
+    startUsersListener();
+    return;
+  }
+
+  // Nicht-Admin: eigenen Status live beobachten
+  userDocUnsub = onSnapshot(doc(db, 'users', user.uid), (snap) => {
+    if (!snap.exists()) { showOnly('pending-screen'); document.getElementById('pending-email').textContent = user.email; return; }
+    const status = snap.data().status;
+    if (status === 'approved') { isAdmin = false; enterApp(); }
+    else if (status === 'rejected') { showOnly('rejected-screen'); document.getElementById('rejected-email').textContent = user.email; }
+    else { showOnly('pending-screen'); document.getElementById('pending-email').textContent = user.email; }
+  }, () => { showOnly('pending-screen'); });
+});
+
+function enterApp() {
+  showOnly(null);
+  const initial = (currentUser.email || '?').charAt(0).toUpperCase();
+  document.getElementById('user-avatar').textContent = initial;
+  document.getElementById('user-name-label').textContent = currentUser.email;
+  document.getElementById('user-role-label').textContent = isAdmin ? 'Administrator' : 'Nutzer';
+  document.getElementById('nav-admin').classList.toggle('hidden', !isAdmin);
+  document.getElementById('mobile-nav-admin').classList.toggle('hidden', !isAdmin);
+  loadReminders(); renderReminderList(); updateBadges();
+  initMonthdaySelect('r-monthday', 22);
+  checkReminders();
+}
+
+// ══════════════ ADMIN: USER MANAGEMENT ══════════════
+let adminTab = 'pending';
+function startUsersListener() {
+  usersUnsub = onSnapshot(query(usersCol), (snap) => {
+    allUsers = snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(u => u.email !== ADMIN_EMAIL);
+    document.getElementById('stat-users').textContent = allUsers.filter(u => u.status === 'approved').length + 1;
+    const pendingCount = allUsers.filter(u => u.status === 'pending').length;
+    document.getElementById('admin-pending-count').textContent = pendingCount + ' offen';
+    const b1 = document.getElementById('sidebar-badge'), b2 = document.getElementById('topbar-bell-badge');
+    renderAdminList();
+  }, (err) => console.error('Admin-Liste Fehler:', err));
+}
+
+window.setAdminTab = (tab) => {
+  adminTab = tab;
+  ['pending','approved','rejected'].forEach(t => document.getElementById('admin-tab-' + t).classList.toggle('active', t === tab));
+  renderAdminList();
+};
+
+function avatarColor(email) {
+  const colors = ['#5b8cff','#8b5cf6','#22d3ee','#34d399','#fbbf24','#fb7185'];
+  let h = 0; for (const c of (email||'')) h = (h + c.charCodeAt(0)) % colors.length;
+  return colors[h];
+}
+
+function renderAdminList() {
+  const list = document.getElementById('admin-list');
+  const empty = document.getElementById('admin-empty');
+  const filtered = allUsers.filter(u => (u.status || 'pending') === adminTab);
+  list.querySelectorAll('.row-card').forEach(el => el.remove());
+  if (filtered.length === 0) { empty.style.display = 'block'; return; }
+  empty.style.display = 'none';
+  filtered.sort((a,b) => (b.createdAt||'').localeCompare(a.createdAt||'')).forEach(u => {
+    const div = document.createElement('div');
+    div.className = 'row-card';
+    const initial = (u.email||'?').charAt(0).toUpperCase();
+    const dateStr = u.createdAt ? new Date(u.createdAt).toLocaleDateString('de-DE') : '';
+    let actions = '';
+    if (adminTab === 'pending') {
+      actions = `<button class="row-btn ok" title="Freischalten" onclick="window.setUserStatus('${u.id}','approved')">✓</button>
+                 <button class="row-btn danger" title="Ablehnen" onclick="window.setUserStatus('${u.id}','rejected')">✕</button>`;
+    } else if (adminTab === 'approved') {
+      actions = `<button class="row-btn danger" title="Zugriff entziehen" onclick="window.setUserStatus('${u.id}','rejected')">✕</button>`;
+    } else {
+      actions = `<button class="row-btn ok" title="Freischalten" onclick="window.setUserStatus('${u.id}','approved')">✓</button>`;
+    }
+    div.innerHTML = `
+      <div class="user-row-avatar" style="background:${avatarColor(u.email)}">${initial}</div>
+      <div style="flex:1;min-width:0">
+        <div class="row-name" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${u.email}</div>
+        <div class="row-meta">${dateStr}</div>
+      </div>
+      <div class="row-actions">${actions}</div>`;
+    list.appendChild(div);
+  });
+}
+
+window.setUserStatus = async (uid, status) => {
+  try { await updateDoc(doc(db, 'users', uid), { status }); }
+  catch(e) { alert('Fehler: ' + e.message); }
+};
+
+window.openAdminPanel = () => { setAdminTab('pending'); document.getElementById('admin-panel').classList.add('open'); document.getElementById('admin-backdrop').classList.add('show'); };
+window.closeAdminPanel = () => { document.getElementById('admin-panel').classList.remove('open'); document.getElementById('admin-backdrop').classList.remove('show'); };
+
+// ══════════════ APP SHELL (unverändert von vorher, reskinned) ══════════════
+const APPS = {
+  'pe-fabrikation': { label:'PE-Fabrikation',       sub:'Workflow Engine',      icon:'🏭', iconBg:'rgba(251,191,36,0.14)',  url:'https://ajdinslijepcevic1-hue.github.io/-PE-/' },
+  'ausmesser':      { label:'Ausmesser Cloud',      sub:'PE Fabrikation GIS',   icon:'📐', iconBg:'rgba(251,113,133,0.14)', url:'https://ajdinslijepcevic1-hue.github.io/PE-Fabrikation_Ausmass/' },
+  'pe-montage':     { label:'Montage Manager / FA', sub:'Montage Manager Pro',  icon:'🔧', iconBg:'rgba(52,211,153,0.14)',  url:'https://alarmpegza-a11y.github.io/PE-MONTAGE/' },
+  'pe-kalender':    { label:'Kalender Manager',     sub:'Tourendispo Live',     icon:'📅', iconBg:'rgba(91,140,255,0.14)',  url:'https://alarmpegza-a11y.github.io/PE-KALENDER/' },
+  'stunden':        { label:'Montage Dispo',        sub:'Zeiterfassung',        icon:'⏱️', iconBg:'rgba(139,92,246,0.14)', url:'https://alarmpegza-a11y.github.io/Stunden/' },
+  'dispo':          { label:'Excel Dispo',          sub:'Tourendispo Pro',      icon:'🚛', iconBg:'rgba(251,191,36,0.14)', url:'https://ajdinslijepcevic1-hue.github.io/Ajdin-Dispo/' },
+  'rechnungen':     { label:'Rechnungskontrolle',   sub:'Subunternehmer-Abgleich', icon:'🧾', iconBg:'rgba(34,211,238,0.14)', url:'https://alarmpegza-a11y.github.io/DATENBANKRECHNUNGEN/' },
+};
+const DAY_NAMES = ['Sonntag','Montag','Dienstag','Mittwoch','Donnerstag','Freitag','Samstag'];
+let currentApp = 'home', sidebarExpanded = false;
+const loadedFrames = new Set();
+
+window.toggleSidebar = () => {
+  sidebarExpanded = !sidebarExpanded;
+  document.getElementById('sidebar').classList.toggle('expanded', sidebarExpanded);
+  document.getElementById('toggle-icon').textContent = sidebarExpanded ? '‹' : '›';
+};
+
+window.openApp = (appId) => {
+  currentApp = appId;
+  document.querySelectorAll('.nav-item[data-app]').forEach(el => el.classList.toggle('active', el.dataset.app === appId));
+  document.querySelectorAll('.mobile-nav-item[data-app]').forEach(el => el.classList.toggle('active', el.dataset.app === appId));
+  document.getElementById('home-screen').style.display = 'none';
+  document.getElementById('error-screen').classList.remove('show');
+  document.querySelectorAll('.app-frame').forEach(f => f.classList.remove('visible'));
+
+  if (appId === 'home') {
+    document.getElementById('home-screen').style.display = 'flex';
+    setTopbar('🏠', 'PE-SYSTEM', 'Command Center', 'rgba(255,255,255,0.06)');
+    return;
+  }
+  const app = APPS[appId]; if (!app) return;
+  setTopbar(app.icon, app.label, app.sub, app.iconBg);
+
+  let frame = document.getElementById('frame-' + appId);
+  if (!frame) {
+    frame = document.createElement('iframe');
+    frame.id = 'frame-' + appId; frame.className = 'app-frame';
+    frame.allow = 'clipboard-read; clipboard-write';
+    document.getElementById('iframe-container').appendChild(frame);
+  }
+  if (!loadedFrames.has(appId)) {
+    const overlay = document.getElementById('loading-overlay');
+    overlay.classList.add('show');
+    const t = setTimeout(() => { overlay.classList.remove('show'); showError(app.url, app.label); }, 6000);
+    frame.onload = () => {
+      clearTimeout(t); overlay.classList.remove('show'); loadedFrames.add(appId);
+      try { const d = frame.contentDocument || frame.contentWindow.document; if (!d || d.body === null) showError(app.url, app.label); } catch(e) {}
+    };
+    frame.onerror = () => { clearTimeout(t); overlay.classList.remove('show'); showError(app.url, app.label); };
+    frame.src = app.url;
+  }
+  frame.classList.add('visible');
+};
+
+function showError(url, label) {
+  document.querySelectorAll('.app-frame').forEach(f => f.classList.remove('visible'));
+  document.getElementById('error-link').href = url;
+  document.getElementById('error-link').textContent = '↗ ' + label + ' öffnen';
+  document.getElementById('error-screen').classList.add('show');
+}
+window.hideError = () => { window.openApp('home'); };
+function setTopbar(icon, name, sub, iconBg) {
+  document.getElementById('topbar-icon').textContent = icon;
+  document.getElementById('topbar-icon').style.background = iconBg;
+  document.getElementById('topbar-name').textContent = name;
+  document.getElementById('topbar-sub').textContent = sub;
+}
+
+function updateClock() {
+  const n = new Date();
+  const el = document.getElementById('clock-val');
+  if (el) el.textContent = String(n.getHours()).padStart(2,'0') + ':' + String(n.getMinutes()).padStart(2,'0');
+}
+updateClock(); setInterval(updateClock, 1000);
+
+// ══════════════ ERINNERUNGS-SYSTEM (unverändert in der Logik) ══════════════
+const LS_KEY = 'pe_reminders_v1', LS_FIRED = 'pe_reminder_fired_v1';
+let reminders = [], alertQueue = [], currentAddType = 'weekly';
+
+function loadReminders() { try { reminders = JSON.parse(localStorage.getItem(LS_KEY) || '[]'); } catch { reminders = []; } }
+function saveReminders() { localStorage.setItem(LS_KEY, JSON.stringify(reminders)); }
+function getFiredKey(r) { const now = new Date(); return r.id + '_' + now.getFullYear() + '_' + now.getMonth() + '_' + now.getDate(); }
+function hasFired(r) { try { const f = JSON.parse(localStorage.getItem(LS_FIRED) || '{}'); return !!f[getFiredKey(r)]; } catch { return false; } }
+function markFired(r) {
+  try {
+    const f = JSON.parse(localStorage.getItem(LS_FIRED) || '{}');
+    const today = new Date(); const todayPrefix = '_' + today.getFullYear() + '_' + today.getMonth() + '_' + today.getDate();
+    Object.keys(f).forEach(k => { if (!k.includes(todayPrefix)) delete f[k]; });
+    f[getFiredKey(r)] = true; localStorage.setItem(LS_FIRED, JSON.stringify(f));
+  } catch {}
+}
+
+window.setReminderType = (type) => {
+  currentAddType = type;
+  document.getElementById('r-type-weekly').classList.toggle('active', type === 'weekly');
+  document.getElementById('r-type-monthly').classList.toggle('active', type === 'monthly');
+  document.getElementById('r-weekly-fields').style.display = type === 'weekly' ? '' : 'none';
+  document.getElementById('r-monthly-fields').style.display = type === 'monthly' ? '' : 'none';
+};
+function initMonthdaySelect(selId, selected) {
+  const sel = document.getElementById(selId); if (!sel) return;
+  sel.innerHTML = '';
+  for (let d = 1; d <= 31; d++) { const o = document.createElement('option'); o.value = d; o.textContent = d + '. Tag'; if (selected && d === selected) o.selected = true; sel.appendChild(o); }
+  if (!selected) sel.value = 22;
+}
+
+window.addReminder = () => {
+  const title = document.getElementById('r-title').value.trim();
+  if (!title) { document.getElementById('r-title').focus(); return; }
+  const id = Date.now().toString(36);
+  let reminder;
+  if (currentAddType === 'weekly') {
+    const day = parseInt(document.getElementById('r-day').value);
+    const time = document.getElementById('r-time').value; if (!time) return;
+    const [h, m] = time.split(':').map(Number);
+    reminder = { id, type: 'weekly', title, day, hour: h, minute: m };
+  } else {
+    const monthday = parseInt(document.getElementById('r-monthday').value);
+    const time = document.getElementById('r-mtime').value; if (!time) return;
+    const [h, m] = time.split(':').map(Number);
+    reminder = { id, type: 'monthly', title, monthday, hour: h, minute: m };
+  }
+  reminders.push(reminder); saveReminders();
+  document.getElementById('r-title').value = '';
+  renderReminderList(); updateBadges();
+};
+window.deleteReminder = (id) => { reminders = reminders.filter(r => r.id !== id); saveReminders(); renderReminderList(); updateBadges(); };
+
+function renderReminderList() {
+  const list = document.getElementById('reminder-list'), empty = document.getElementById('reminder-empty');
+  list.querySelectorAll('.row-card').forEach(el => el.remove());
+  if (reminders.length === 0) { empty.style.display = 'block'; return; }
+  empty.style.display = 'none';
+  reminders.forEach(r => {
+    const isMonthly = r.type === 'monthly';
+    const timeStr = String(r.hour).padStart(2,'0') + ':' + String(r.minute).padStart(2,'0');
+    const metaStr = isMonthly ? (r.monthday + '. des Monats · ' + timeStr + ' Uhr') : (DAY_NAMES[r.day] + ' · ' + timeStr + ' Uhr');
+    const div = document.createElement('div');
+    div.className = 'row-card';
+    div.innerHTML = `
+      <div class="row-icon">${isMonthly ? '📅' : '🔔'}</div>
+      <div style="flex:1;min-width:0">
+        <div class="row-name">${escHtml(r.title)}</div>
+        <div class="row-meta">${metaStr} · ${isMonthly ? 'Monatlich' : 'Wöchentlich'}</div>
+      </div>
+      <div class="row-actions"><button class="row-btn danger" onclick="window.deleteReminder('${r.id}')">🗑</button></div>`;
+    list.appendChild(div);
+  });
+}
+function escHtml(str) { return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+function updateBadges() {
+  const count = reminders.length; const show = count > 0; const txt = count > 9 ? '9+' : String(count);
+  ['sidebar-badge','topbar-bell-badge','mobile-bell-badge'].forEach(id => {
+    const el = document.getElementById(id); if (!el) return;
+    el.classList.toggle('show', show); el.textContent = txt;
+  });
+}
+
+window.openReminderPanel = () => { renderReminderList(); document.getElementById('reminder-panel').classList.add('open'); document.getElementById('reminder-backdrop').classList.add('show'); };
+window.closeReminderPanel = () => { document.getElementById('reminder-panel').classList.remove('open'); document.getElementById('reminder-backdrop').classList.remove('show'); };
+
+function showAlert(r) {
+  const timeStr = String(r.hour).padStart(2,'0') + ':' + String(r.minute).padStart(2,'0');
+  document.getElementById('alert-title').textContent = r.title;
+  document.getElementById('alert-time').textContent = r.type === 'monthly' ? (r.monthday + '. des Monats · ' + timeStr + ' Uhr') : (DAY_NAMES[r.day] + ' · ' + timeStr + ' Uhr');
+  const qEl = document.getElementById('alert-queue');
+  if (alertQueue.length > 0) { qEl.textContent = '+ ' + alertQueue.length + ' weitere Erinnerung' + (alertQueue.length > 1 ? 'en' : '') + ' warten'; qEl.classList.add('show'); }
+  else qEl.classList.remove('show');
+  document.getElementById('reminder-alert').classList.add('show');
+}
+window.dismissAlert = () => {
+  document.getElementById('reminder-alert').classList.remove('show');
+  if (alertQueue.length > 0) { const next = alertQueue.shift(); setTimeout(() => showAlert(next), 400); }
+};
+function checkReminders() {
+  const now = new Date(); const currentDay = now.getDay(), currentDate = now.getDate(), currentH = now.getHours(), currentM = now.getMinutes();
+  reminders.forEach(r => {
+    if (r.hour !== currentH || r.minute !== currentM) return;
+    if (r.type === 'monthly') { if (r.monthday !== currentDate) return; } else { if (r.day !== currentDay) return; }
+    if (hasFired(r)) return;
+    markFired(r);
+    if (document.getElementById('reminder-alert').classList.contains('show')) { alertQueue.push(r); }
+    else showAlert(r);
+  });
+}
+setInterval(checkReminders, 30000);
+</script>
 </body>
 </html>
