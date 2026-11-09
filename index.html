@@ -707,7 +707,7 @@
                         <div class="text-[9px] font-bold text-slate-500 uppercase truncate mt-0.5">${p.adresse || '-'}</div>
                         <div class="flex items-center gap-1.5 flex-wrap mt-1">
                             ${p.ausmesser ? `<span style="background:${getAusmesserColor(p.ausmesser)||'#64748b'};color:#fff;font-size:8px;font-weight:900;padding:1px 6px;border-radius:999px;">${p.ausmesser}</span>` : ''}
-                            ${(() => { const done = allSnapshots.filter(x => x.projektId === p.id); if (!done.length) return ''; const last = done.sort((a,b)=>(b.erledigtAm||'').localeCompare(a.erledigtAm||''))[0]; return `<span style="background:#16a34a;color:#fff;font-size:8px;font-weight:900;padding:1px 6px;border-radius:999px;">✅ ERLEDIGT${done.length>1?' ×'+done.length:''} · ${last.erledigtVon||''}</span>`; })()}
+                            ${(() => { const done = allSnapshots.filter(x => x.projektId === p.id); if (!done.length) return ''; const last = done.sort((a,b)=>(b.erledigtAm||'').localeCompare(a.erledigtAm||''))[0]; const tw = last.erledigtTyp === 'teilweise'; return `<span style="background:${tw?'#f59e0b':'#16a34a'};color:#fff;font-size:8px;font-weight:900;padding:1px 6px;border-radius:999px;">${tw?'◐ TEILWEISE':'✅ ERLEDIGT'}${done.length>1?' · '+done.length+' EINSÄTZE':''} · ${last.erledigtVon||''}</span>`; })()}
                             ${ageWarning}
                         </div>
                     </div>
@@ -738,10 +738,15 @@
             if (event) { event.preventDefault(); event.stopPropagation(); }
             const snap = allSnapshots.find(s => s.id === snapshotId);
             if (!snap) return;
-            const undo = confirm(`Auftrag "${snap.projektId}" erledigt von: ${snap.erledigtVon}\n\nEintrag aus Kalender entfernen?`);
+            const typTxt = snap.erledigtTyp === 'teilweise' ? 'teilweise erledigt' : 'erledigt';
+            const undo = confirm(`Auftrag "${snap.projektId}" ${typTxt} von: ${snap.erledigtVon}\n\nErledigt-Markierung rückgängig machen?` +
+                (snap.folgetermin ? `\n\n(Der Folgetermin ${fmtTermin(snap.folgetermin)} bleibt bestehen.)` : ''));
             if (!undo) return;
             try {
                 await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'kalender_snapshots', snapshotId));
+                if (snap.erledigtTyp !== 'teilweise' && allProjects.some(p => p.id === snap.projektId)) {
+                    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'projekte', snap.projektId), { erledigt: false, erledigtVon: '', erledigtAm: '' });
+                }
                 showStatus('EINTRAG ENTFERNT', "info");
             } catch(e) { showStatus("FEHLER", "error"); }
         };
@@ -751,86 +756,188 @@
             showDoneModal(projektId, datum);
         };
 
+        // ════════════════════════════════════════════════
+        // ERLEDIGT-NACHFRAGE: Komplett fertig / Teilweise fertig
+        //   Teilweise → Folgetermin eintragen ODER Nachricht senden
+        // ════════════════════════════════════════════════
+        const DONE_PRESETS = ['Warte auf Rückmeldung Kunde', 'Baustelle noch nicht bereit', 'Pläne fehlen / unklar', 'Bauleitung nicht erreichbar', 'Material / Zugang fehlt'];
+        let doneState = null;
+
         function showDoneModal(projektId, datum) {
+            document.getElementById('done-modal-overlay')?.remove();
+            const project = allProjects.find(p => p.id === projektId) || {};
+            doneState = { projektId, datum, step: 'wahl', mode: 'folgetermin' };
             const overlay = document.createElement('div');
             overlay.id = 'done-modal-overlay';
             overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.75);backdrop-filter:blur(8px);z-index:9999;display:flex;align-items:center;justify-content:center;padding:1rem;';
-            const escapedDatum = datum.replace(/"/g, '&quot;');
             overlay.innerHTML = `
-                <div style="background:#fff;border-radius:1.5rem;padding:2rem;width:100%;max-width:380px;box-shadow:0 25px 60px rgba(0,0,0,0.3);">
-                    <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:1.25rem;">
+                <div style="background:#fff;border-radius:1.5rem;padding:1.5rem;width:100%;max-width:440px;box-shadow:0 25px 60px rgba(0,0,0,0.3);max-height:92vh;overflow-y:auto;font-family:Inter,sans-serif;">
+                    <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:1.1rem;">
                         <div style="width:44px;height:44px;background:#16a34a;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:1.3rem;flex-shrink:0;">✅</div>
-                        <div>
-                            <div style="font-weight:900;font-size:14px;text-transform:uppercase;color:#0f172a;font-family:Inter,sans-serif;">Auftrag erledigt</div>
-                            <div style="font-size:10px;font-weight:700;color:#64748b;text-transform:uppercase;font-family:Inter,sans-serif;">${projektId}</div>
+                        <div style="min-width:0;flex:1;">
+                            <div style="font-weight:900;font-size:14px;text-transform:uppercase;color:#0f172a;">Auftrag abschliessen</div>
+                            <div style="font-size:10px;font-weight:700;color:#64748b;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${projektId}${project.adresse ? ' · ' + project.adresse : ''}</div>
                         </div>
+                        <button onclick="closeDoneModal()" style="width:34px;height:34px;border-radius:9px;border:none;background:#f1f5f9;color:#64748b;cursor:pointer;font-weight:900;font-size:16px;flex-shrink:0;">×</button>
                     </div>
-                    <label style="font-size:9px;font-weight:900;text-transform:uppercase;color:#94a3b8;letter-spacing:0.1em;display:block;margin-bottom:0.5rem;font-family:Inter,sans-serif;">Dein Name (Pflicht)</label>
-                    <input id="done-name-input" type="text" placeholder="VORNAME NACHNAME"
-                        style="width:100%;border:2px solid #e2e8f0;border-radius:0.75rem;padding:0.875rem 1rem;font-size:16px;font-weight:800;text-transform:uppercase;outline:none;color:#0f172a;font-family:Inter,sans-serif;box-sizing:border-box;"
-                        onfocus="this.style.borderColor='#16a34a'" onblur="this.style.borderColor='#e2e8f0'">
-                    <div style="display:flex;gap:0.75rem;margin-top:1.25rem;">
-                        <button onclick="closeDoneModal()"
-                            style="flex:1;padding:0.875rem;border-radius:0.875rem;border:2px solid #e2e8f0;background:white;font-weight:900;font-size:11px;text-transform:uppercase;cursor:pointer;color:#64748b;font-family:Inter,sans-serif;">
-                            Abbrechen
-                        </button>
-                        <button onclick="confirmDone('${projektId}', '${escapedDatum}')"
-                            style="flex:1;padding:0.875rem;border-radius:0.875rem;border:none;background:#16a34a;color:white;font-weight:900;font-size:11px;text-transform:uppercase;cursor:pointer;box-shadow:0 4px 15px rgba(22,163,74,0.4);font-family:Inter,sans-serif;">
-                            ✓ Bestätigen
-                        </button>
-                    </div>
-                </div>
-            `;
+                    <label style="font-size:9px;font-weight:900;text-transform:uppercase;color:#94a3b8;letter-spacing:0.1em;display:block;margin-bottom:0.4rem;">Dein Name (Pflicht)</label>
+                    <input id="done-name-input" type="text" placeholder="VORNAME NACHNAME" value="${currentIdentity && !isAdmin() ? currentIdentity : ''}"
+                        style="width:100%;border:2px solid #e2e8f0;border-radius:0.75rem;padding:0.8rem 1rem;font-size:16px;font-weight:800;text-transform:uppercase;outline:none;color:#0f172a;box-sizing:border-box;margin-bottom:1rem;">
+                    <div id="done-body"></div>
+                </div>`;
             document.body.appendChild(overlay);
-            if (currentIdentity && !isAdmin()) document.getElementById('done-name-input').value = currentIdentity;
-            setTimeout(() => document.getElementById('done-name-input')?.focus(), 100);
-            overlay.querySelector('#done-name-input').addEventListener('keydown', e => {
-                if (e.key === 'Enter') confirmDone(projektId, datum);
-            });
+            renderDoneBody();
         }
 
-        window.closeDoneModal = () => { document.getElementById('done-modal-overlay')?.remove(); };
-
-        window.confirmDone = async (projektId, datum) => {
-            const nameInput = document.getElementById('done-name-input');
-            const name = nameInput?.value.trim();
-            if (!name) {
-                nameInput.style.borderColor = '#ef4444';
-                nameInput.placeholder = 'NAME ERFORDERLICH!';
-                nameInput.focus();
+        function renderDoneBody() {
+            const body = document.getElementById('done-body');
+            if (!body || !doneState) return;
+            const big = (onclick, bg, border, color, icon, title, sub) => `
+                <button onclick="${onclick}" style="width:100%;display:flex;align-items:center;gap:12px;padding:1rem;border-radius:1rem;border:2px solid ${border};background:${bg};cursor:pointer;text-align:left;margin-bottom:0.6rem;font-family:Inter,sans-serif;">
+                    <span style="font-size:1.5rem;">${icon}</span>
+                    <span><span style="display:block;font-weight:900;font-size:14px;text-transform:uppercase;color:${color};">${title}</span>
+                    <span style="display:block;font-size:10px;font-weight:700;color:#64748b;text-transform:uppercase;margin-top:2px;">${sub}</span></span>
+                </button>`;
+            if (doneState.step === 'wahl') {
+                body.innerHTML =
+                    big("doneKomplett()", '#f0fdf4', '#86efac', '#15803d', '✅', 'Komplett fertig', 'Auftrag wird als erledigt markiert') +
+                    big("doneSetStep('teilweise')", '#fffbeb', '#fcd34d', '#b45309', '◐', 'Teilweise fertig', 'Folgetermin eintragen oder Nachricht senden');
                 return;
             }
+            // Schritt 2: Teilweise
+            const m = doneState.mode;
+            const tab = (id, label) => `<button onclick="doneSetMode('${id}')" style="flex:1;padding:0.7rem;border-radius:0.75rem;border:2px solid ${m===id?'#f59e0b':'#e2e8f0'};background:${m===id?'#fffbeb':'#fff'};color:${m===id?'#b45309':'#64748b'};font-weight:900;font-size:11px;text-transform:uppercase;cursor:pointer;font-family:Inter,sans-serif;">${label}</button>`;
+            const lbl = (t) => `<label style="font-size:9px;font-weight:900;text-transform:uppercase;color:#94a3b8;letter-spacing:0.1em;display:block;margin:0.2rem 0 0.4rem;">${t}</label>`;
+            const ta = (ph) => `<textarea id="done-text" rows="3" placeholder="${ph}" style="width:100%;border:2px solid #e2e8f0;border-radius:0.75rem;padding:0.75rem 1rem;font-size:16px;font-weight:600;outline:none;color:#0f172a;box-sizing:border-box;resize:vertical;font-family:Inter,sans-serif;">${(doneState.text||'').replace(/</g,'&lt;')}</textarea>`;
+            const presets = DONE_PRESETS.map(t => `<button type="button" onclick="donePreset(this)" data-t="${t}" style="padding:5px 10px;border-radius:999px;border:1px solid #fcd34d;background:#fffbeb;color:#92400e;font-weight:800;font-size:10px;cursor:pointer;font-family:Inter,sans-serif;">${t}</button>`).join('');
+            let inhalt = '';
+            if (m === 'folgetermin') {
+                const project = allProjects.find(p => p.id === doneState.projektId) || {};
+                inhalt = lbl('Neuer Termin (Pflicht)') +
+                    `<input id="done-folgetermin" type="datetime-local" value="${doneState.folgetermin||''}" style="width:100%;border:2px solid #e2e8f0;border-radius:0.75rem;padding:0.75rem 1rem;font-size:16px;font-weight:800;outline:none;color:#0f172a;box-sizing:border-box;margin-bottom:0.8rem;">` +
+                    lbl('Bemerkung (optional, geht an Admin)') + ta('z.B. Restliche Etagen nächste Woche') +
+                    `<div style="font-size:10px;font-weight:700;color:#64748b;margin-top:0.5rem;">Der Auftrag${project.ausmesser ? ' bleibt bei <b>' + project.ausmesser + '</b> und' : ''} wird auf den neuen Termin verschoben.</div>`;
+            } else {
+                const empf = recipientsList();
+                const chips = empf.map(n => {
+                    const pre = (doneState.an || ['ADMIN']).some(x => sameName(x, n));
+                    return `<label style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:2px solid ${pre?'#f59e0b':'#e2e8f0'};background:${pre?'#fffbeb':'#fff'};border-radius:999px;cursor:pointer;font-weight:900;font-size:11px;text-transform:uppercase;color:#334155;">
+                        <input type="checkbox" class="done-recipient" value="${n}" ${pre?'checked':''} style="width:15px;height:15px;" onchange="this.parentElement.style.borderColor=this.checked?'#f59e0b':'#e2e8f0';this.parentElement.style.background=this.checked?'#fffbeb':'#fff';"> ${n==='ADMIN'?'🔒 ADMIN':n}</label>`;
+                }).join('');
+                inhalt = lbl('An wen?') + `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:0.8rem;">${chips}</div>` +
+                    lbl('Schnelltext') + `<div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:0.6rem;">${presets}</div>` +
+                    lbl('Nachricht (Pflicht)') + ta('z.B. Warte auf Rückmeldung Kunde');
+            }
+            body.innerHTML = `
+                <div style="display:flex;gap:6px;margin-bottom:0.9rem;">${tab('folgetermin','📅 Folgetermin')}${tab('nachricht','💬 Nachricht')}</div>
+                ${inhalt}
+                <div style="display:flex;gap:0.6rem;margin-top:1.1rem;">
+                    <button onclick="doneSetStep('wahl')" style="flex:1;padding:0.85rem;border-radius:0.875rem;border:2px solid #e2e8f0;background:#fff;font-weight:900;font-size:11px;text-transform:uppercase;cursor:pointer;color:#64748b;font-family:Inter,sans-serif;">← Zurück</button>
+                    <button onclick="doneTeilweise()" style="flex:2;padding:0.85rem;border-radius:0.875rem;border:none;background:#f59e0b;color:#fff;font-weight:900;font-size:11px;text-transform:uppercase;cursor:pointer;box-shadow:0 4px 15px rgba(245,158,11,0.4);font-family:Inter,sans-serif;">${m==='folgetermin' ? '📅 Folgetermin speichern' : '➤ Nachricht senden'}</button>
+                </div>`;
+        }
+
+        // Eingaben merken, bevor neu gerendert wird
+        function doneKeep() {
+            if (!doneState) return;
+            const t = document.getElementById('done-text'); if (t) doneState.text = t.value;
+            const f = document.getElementById('done-folgetermin'); if (f) doneState.folgetermin = f.value;
+            const r = document.querySelectorAll('.done-recipient'); if (r.length) doneState.an = Array.from(r).filter(c => c.checked).map(c => c.value);
+        }
+        window.doneSetStep = (st) => { doneKeep(); doneState.step = st; renderDoneBody(); };
+        window.doneSetMode = (m) => { doneKeep(); doneState.mode = m; renderDoneBody(); };
+        window.donePreset = (btn) => { const t = document.getElementById('done-text'); if (t) { t.value = btn.dataset.t; t.focus(); } };
+
+        function doneName() {
+            const el = document.getElementById('done-name-input');
+            const name = (el?.value || '').trim().toUpperCase();
+            if (!name) { el.style.borderColor = '#ef4444'; el.placeholder = 'NAME ERFORDERLICH!'; el.focus(); return null; }
+            return name;
+        }
+
+        window.closeDoneModal = () => { document.getElementById('done-modal-overlay')?.remove(); doneState = null; };
+
+        // Verlaufseintrag (Snapshot) schreiben — ersetzt im Kalender den Auftrag zu diesem Termin
+        async function writeDoneSnapshot(projektId, datum, name, extra) {
+            const snapshotId = projektId + '__' + datum.replace(/[:.]/g, '-');
+            const einsatzNr = allSnapshots.filter(s => s.projektId === projektId && s.id !== snapshotId).length + 1;
+            const project = allProjects.find(p => p.id === projektId) || {};
+            await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'kalender_snapshots', snapshotId), {
+                projektId, datum,
+                adresse: project.adresse || '', kunde: project.kunde || '',
+                verantwortlicher: project.verantwortlicher || '', auftragsart: project.auftragsart || '',
+                ausmesser: project.ausmesser || '', pl_intern: project.pl_intern || '',
+                tel_bauleitung: project.tel_bauleitung || '', tel_monteur: project.tel_monteur || '',
+                erledigtVon: name, erledigtAm: new Date().toISOString(),
+                einsatzNr, createdAt: new Date().toISOString(),
+                ...extra
+            });
+            return { einsatzNr, project };
+        }
+
+        window.doneKomplett = async () => {
+            const name = doneName(); if (!name) return;
+            const { projektId, datum } = doneState;
             closeDoneModal();
             showStatus("WIRD GESPEICHERT...", "info");
             try {
-                const snapshotId = projektId + '__' + datum.replace(/[:.]/g, '-');
-                const prevSnaps = allSnapshots.filter(s => s.projektId === projektId);
-                const einsatzNr = prevSnaps.length + 1;
-                const project = allProjects.find(p => p.id === projektId) || {};
-
-                await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'kalender_snapshots', snapshotId), {
-                    projektId,
-                    datum,
-                    adresse:         project.adresse || '',
-                    kunde:           project.kunde || '',
-                    verantwortlicher: project.verantwortlicher || '',
-                    auftragsart:     project.auftragsart || '',
-                    ausmesser:       project.ausmesser || '',
-                    pl_intern:       project.pl_intern || '',
-                    tel_bauleitung:  project.tel_bauleitung || '',
-                    tel_monteur:     project.tel_monteur || '',
-                    erledigtVon: name.toUpperCase(),
-                    erledigtAm: new Date().toISOString(),
-                    einsatzNr,
-                    createdAt: new Date().toISOString()
+                const { einsatzNr, project } = await writeDoneSnapshot(projektId, datum, name, { erledigtTyp: 'komplett' });
+                await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'projekte', projektId), {
+                    erledigt: true, erledigtVon: name, erledigtAm: new Date().toISOString()
                 });
-                showStatus('✅ ERLEDIGT VON ' + name.toUpperCase() + ' · EINSATZ #' + einsatzNr, "success");
-                if (!isAdmin()) {
-                    postNachricht({ an: ['ADMIN'], typ: 'system',
-                        text: `✅ Auftrag erledigt von ${name.toUpperCase()} (Einsatz #${einsatzNr})`,
-                        auftrag: { id: projektId, adresse: project.adresse || '', datum } }).catch(console.error);
-                }
+                showStatus('✅ KOMPLETT ERLEDIGT · ' + name, "success");
+                if (!isAdmin()) postNachricht({ an: ['ADMIN'], typ: 'system',
+                    text: `✅ KOMPLETT FERTIG – gemeldet von ${name} (Einsatz #${einsatzNr})`,
+                    auftrag: { id: projektId, adresse: project.adresse || '', datum } }).catch(console.error);
             } catch(e) { console.error(e); showStatus("FEHLER BEIM SPEICHERN", "error"); }
+        };
+
+        window.doneTeilweise = async () => {
+            doneKeep();
+            const name = doneName(); if (!name) return;
+            const { projektId, datum, mode } = doneState;
+            const project = allProjects.find(p => p.id === projektId) || {};
+            const text = (doneState.text || '').trim();
+            const auftragBase = { id: projektId, adresse: project.adresse || '' };
+
+            if (mode === 'folgetermin') {
+                const neu = doneState.folgetermin;
+                const fEl = document.getElementById('done-folgetermin');
+                if (!neu) { if (fEl) { fEl.style.borderColor = '#ef4444'; fEl.focus(); } showStatus('FOLGETERMIN EINTRAGEN!', 'error'); return; }
+                if (neu === datum) { showStatus('FOLGETERMIN MUSS ANDERS SEIN ALS DER AKTUELLE', 'error'); return; }
+                const conflict = checkDuplicateDateTime(neu, projektId, project.ausmesser);
+                if (conflict) { showStatus(`TERMIN BELEGT DURCH "${conflict.id}"`, 'error'); return; }
+                closeDoneModal();
+                showStatus("WIRD GESPEICHERT...", "info");
+                try {
+                    const { einsatzNr } = await writeDoneSnapshot(projektId, datum, name, { erledigtTyp: 'teilweise', folgetermin: neu, bemerkung: text });
+                    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'projekte', projektId), {
+                        datum: neu, erledigt: false, lastUpdated: new Date().toISOString()
+                    });
+                    showStatus(`◐ TEILWEISE · FOLGETERMIN ${fmtTermin(neu)}`, "success");
+                    // Admin sofort informieren, wenn ein Ausmesser verschiebt
+                    if (!isAdmin()) await postNachricht({ an: ['ADMIN'], typ: 'verschiebung',
+                        text: `◐ TEILWEISE FERTIG (Einsatz #${einsatzNr}) – ${name}\n📅 Folgetermin: ${fmtTermin(datum)} → ${fmtTermin(neu)}${text ? '\n💬 ' + text : ''}`,
+                        auftrag: { ...auftragBase, datum: neu } });
+                    // Zugeteilter Ausmesser informieren, wenn jemand anderes den Folgetermin setzt
+                    if (project.ausmesser && !sameName(project.ausmesser, myId())) await postNachricht({ an: [project.ausmesser], typ: 'zuteilung',
+                        text: `🕑 Folgetermin eingetragen: ${fmtTermin(datum)} → ${fmtTermin(neu)}${text ? '\n💬 ' + text : ''}`,
+                        auftrag: { ...auftragBase, datum: neu } });
+                } catch(e) { console.error(e); showStatus("FEHLER BEIM SPEICHERN", "error"); }
+            } else {
+                const an = doneState.an || [];
+                if (an.length === 0) { showStatus('EMPFÄNGER WÄHLEN!', 'error'); return; }
+                if (!text) { const t = document.getElementById('done-text'); if (t) { t.style.borderColor = '#ef4444'; t.focus(); } showStatus('NACHRICHT EINGEBEN!', 'error'); return; }
+                closeDoneModal();
+                showStatus("WIRD GESENDET...", "info");
+                try {
+                    const { einsatzNr } = await writeDoneSnapshot(projektId, datum, name, { erledigtTyp: 'teilweise', bemerkung: text, wartet: true });
+                    await postNachricht({ an, typ: 'rueckmeldung',
+                        text: `◐ TEILWEISE FERTIG (Einsatz #${einsatzNr}) – ${name}\n💬 ${text}`,
+                        auftrag: { ...auftragBase, datum } });
+                    showStatus(`💬 NACHRICHT GESENDET AN ${an.join(', ')}`, "success");
+                } catch(e) { console.error(e); showStatus("FEHLER BEIM SENDEN", "error"); }
+            }
         };
 
         // ════════════════════════════════════════════════
@@ -1327,6 +1434,7 @@
             const me = myId().toUpperCase();
             return allNachrichten.filter(n =>
                 (n.an || []).some(x => (x||'').toUpperCase() === me) &&
+                !(n.geloeschtVon || []).some(x => (x||'').toUpperCase() === me) &&
                 !(n.gelesenVon || []).some(x => (x||'').toUpperCase() === me)
             );
         }
@@ -1387,7 +1495,15 @@
             if (prev && prev.ausmesser && !sameName(prev.ausmesser, am) && !sameName(prev.ausmesser, me)) {
                 await postNachricht({ an: [prev.ausmesser], typ: 'zuteilung', auftrag, text: `↪ Auftrag wurde ${am ? 'an ' + am + ' ' : ''}umgeteilt – nicht mehr in deinem Kalender.` });
             }
-            // 3) Admin erfährt von neuen Aufträgen, die ein Ausmesser erfasst hat
+            // 3) Admin erfährt SOFORT, wenn ein Ausmesser einen Termin verschiebt oder umteilt
+            if (prev && !isAdmin()) {
+                const aenderungen = [];
+                if (prev.datum !== data.datum) aenderungen.push(`📅 Termin verschoben: ${fmtTermin(prev.datum)} → ${fmtTermin(data.datum)}`);
+                if (!sameName(prev.ausmesser, am)) aenderungen.push(`👤 Ausmesser: ${prev.ausmesser || '—'} → ${am || '—'}`);
+                if ((prev.adresse || '') !== (data.adresse || '')) aenderungen.push(`📍 Adresse geändert: ${data.adresse || '—'}`);
+                if (aenderungen.length) await postNachricht({ an: ['ADMIN'], typ: 'verschiebung', auftrag, text: `✎ Änderung durch ${me}\n` + aenderungen.join('\n') });
+            }
+            // 4) Admin erfährt von neuen Aufträgen, die ein Ausmesser erfasst hat
             if (!prev && !isAdmin()) {
                 await postNachricht({ an: ['ADMIN'], typ: 'system', auftrag, text: `✚ Neuer Auftrag erfasst von ${me}${am ? ' · zugeteilt: ' + am : ''} · ${fmtTermin(data.datum)}` });
             }
@@ -1432,14 +1548,15 @@
             if (!overlay._unreadAtOpen) overlay._unreadAtOpen = new Set(unreadForMe().map(n => n.id));
             const wasUnread = (n) => overlay._unreadAtOpen.has(n.id);
 
-            const eingang = allNachrichten.filter(n => (n.an||[]).some(x => (x||'').toUpperCase() === me));
-            const gesendet = allNachrichten.filter(n => (n.von||'').toUpperCase() === me);
+            const notDeleted = (n) => !(n.geloeschtVon || []).some(x => (x||'').toUpperCase() === me);
+            const eingang = allNachrichten.filter(n => (n.an||[]).some(x => (x||'').toUpperCase() === me)).filter(notDeleted);
+            const gesendet = allNachrichten.filter(n => (n.von||'').toUpperCase() === me).filter(notDeleted);
             const liste = (tab === 'eingang') ? eingang : gesendet;
 
             const card = (n) => {
-                const istAufgabe = n.typ === 'aufgabe';
+                const istAufgabe = n.typ === 'aufgabe' || n.typ === 'rueckmeldung';
                 const ungelesen = tab === 'eingang' && wasUnread(n);
-                const accent = istAufgabe ? '#7c3aed' : '#2563eb';
+                const accent = n.typ === 'rueckmeldung' || n.typ === 'verschiebung' ? '#f59e0b' : (istAufgabe ? '#7c3aed' : '#2563eb');
                 const auftragChip = n.auftrag && n.auftrag.id
                     ? `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px;">
                         <button onclick="openAuftragAusNachricht('${(n.auftrag.id||'').replace(/'/g,'')}')" style="display:inline-flex;align-items:center;gap:5px;background:#eff6ff;color:#1e40af;border:1px solid #bfdbfe;padding:4px 10px;border-radius:999px;font-size:10px;font-weight:900;font-family:Inter,sans-serif;cursor:pointer;text-align:left;">📋 ${n.auftrag.id}${n.auftrag.adresse ? ' · ' + n.auftrag.adresse : ''}${n.auftrag.datum ? ' · ' + fmtTermin(n.auftrag.datum) : ''} <span style="opacity:0.6;">öffnen →</span></button>
@@ -1449,19 +1566,22 @@
                 return `
                     <div style="border:1px solid #e2e8f0;border-left:4px solid ${ungelesen ? '#ef4444' : accent};border-radius:12px;padding:12px 14px;margin-bottom:10px;background:${ungelesen ? '#fff7f7' : '#fff'};">
                         <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap;">
-                            ${istAufgabe ? `<span style="background:#7c3aed;color:#fff;font-size:8px;font-weight:900;padding:2px 7px;border-radius:999px;text-transform:uppercase;font-family:Inter,sans-serif;">Aufgabe</span>` : ''}
+                            ${n.typ === 'aufgabe' ? `<span style="background:#7c3aed;color:#fff;font-size:8px;font-weight:900;padding:2px 7px;border-radius:999px;text-transform:uppercase;font-family:Inter,sans-serif;">Aufgabe</span>` : ''}
+                            ${n.typ === 'rueckmeldung' ? `<span style="background:#f59e0b;color:#fff;font-size:8px;font-weight:900;padding:2px 7px;border-radius:999px;text-transform:uppercase;font-family:Inter,sans-serif;">◐ Rückmeldung</span>` : ''}
+                            ${n.typ === 'verschiebung' ? `<span style="background:#ea580c;color:#fff;font-size:8px;font-weight:900;padding:2px 7px;border-radius:999px;text-transform:uppercase;font-family:Inter,sans-serif;">Änderung</span>` : ''}
                             ${n.typ === 'zuteilung' ? `<span style="background:#f59e0b;color:#fff;font-size:8px;font-weight:900;padding:2px 7px;border-radius:999px;text-transform:uppercase;font-family:Inter,sans-serif;">Zuteilung</span>` : ''}
                             ${n.typ === 'system' ? `<span style="background:#64748b;color:#fff;font-size:8px;font-weight:900;padding:2px 7px;border-radius:999px;text-transform:uppercase;font-family:Inter,sans-serif;">Info</span>` : ''}
                             ${ungelesen ? `<span style="background:#ef4444;color:#fff;font-size:8px;font-weight:900;padding:2px 7px;border-radius:999px;text-transform:uppercase;font-family:Inter,sans-serif;">Neu</span>` : ''}
-                            ${aufgabeErledigt ? `<span style="background:#16a34a;color:#fff;font-size:8px;font-weight:900;padding:2px 7px;border-radius:999px;text-transform:uppercase;font-family:Inter,sans-serif;">✓ Erledigt</span>` : ''}
+                            ${aufgabeErledigt ? `<span style="background:#16a34a;color:#fff;font-size:8px;font-weight:900;padding:2px 7px;border-radius:999px;text-transform:uppercase;font-family:Inter,sans-serif;">✓ ${n.typ === 'rueckmeldung' ? 'Verarbeitet' : 'Erledigt'}${n.erledigtVon ? ' · ' + n.erledigtVon : ''}</span>` : ''}
                             <span style="font-weight:900;font-size:12px;text-transform:uppercase;color:#0f172a;font-family:Inter,sans-serif;">${tab === 'eingang' ? ('Von ' + (n.von||'—')) : ('An ' + (n.an||[]).join(', '))}</span>
                             <span style="margin-left:auto;font-size:9px;font-weight:800;color:#94a3b8;font-family:Inter,sans-serif;">${fmtMsgTime(n.createdAt)}</span>
                         </div>
                         ${auftragChip}
                         <div style="font-size:13px;font-weight:600;color:#334155;white-space:pre-wrap;font-family:Inter,sans-serif;margin-bottom:8px;">${(n.text||'').replace(/</g,'&lt;')}</div>
                         <div style="display:flex;gap:7px;flex-wrap:wrap;">
-                            ${tab === 'eingang' && n.von && n.von !== 'SYSTEM' ? `<button onclick="replyNachricht('${(n.von||'').replace(/'/g,'')}', '${n.id}')" style="padding:6px 12px;border-radius:8px;border:none;background:#0f172a;color:#fff;font-weight:900;font-size:10px;text-transform:uppercase;cursor:pointer;font-family:Inter,sans-serif;">↩ Antworten</button>` : ''}
-                            ${istAufgabe && !n.erledigt ? `<button onclick="toggleAufgabeErledigt('${n.id}')" style="padding:6px 12px;border-radius:8px;border:none;background:#16a34a;color:#fff;font-weight:900;font-size:10px;text-transform:uppercase;cursor:pointer;font-family:Inter,sans-serif;">✓ Aufgabe erledigt</button>` : ''}
+                            ${tab === 'eingang' && n.von && n.von !== 'SYSTEM' ? `<button onclick="replyNachricht('${n.id}')" style="padding:6px 12px;border-radius:8px;border:none;background:#0f172a;color:#fff;font-weight:900;font-size:10px;text-transform:uppercase;cursor:pointer;font-family:Inter,sans-serif;">↩ Antworten</button>` : ''}
+                            ${istAufgabe && !n.erledigt && tab === 'eingang' ? `<button onclick="toggleAufgabeErledigt('${n.id}')" style="padding:6px 12px;border-radius:8px;border:none;background:#16a34a;color:#fff;font-weight:900;font-size:10px;text-transform:uppercase;cursor:pointer;font-family:Inter,sans-serif;">✓ ${n.typ === 'rueckmeldung' ? 'Verarbeitet' : 'Aufgabe erledigt'}</button>` : ''}
+                            <button onclick="deleteNachricht('${n.id}')" title="Löschen" style="margin-left:auto;padding:6px 10px;border-radius:8px;border:none;background:#fee2e2;color:#dc2626;font-weight:900;font-size:10px;text-transform:uppercase;cursor:pointer;font-family:Inter,sans-serif;">🗑 Löschen</button>
                         </div>
                     </div>`;
             };
@@ -1489,10 +1609,11 @@
                         <button onclick="closePostfach()" style="width:34px;height:34px;border-radius:9px;border:none;background:#f1f5f9;color:#64748b;cursor:pointer;font-weight:900;font-size:16px;line-height:1;flex-shrink:0;">×</button>
                     </div>
                     <button onclick="openCompose()" style="width:100%;padding:0.8rem;border-radius:0.875rem;border:none;background:#2563eb;color:#fff;font-weight:900;font-size:12px;text-transform:uppercase;cursor:pointer;margin-bottom:0.9rem;box-shadow:0 4px 15px rgba(37,99,235,0.35);font-family:Inter,sans-serif;">✚ Neue Nachricht / Aufgabe</button>
-                    <div style="display:flex;gap:7px;margin-bottom:1rem;">
+                    <div style="display:flex;gap:7px;margin-bottom:0.6rem;">
                         ${tabBtn('eingang','Eingang', unreadCount)}
                         ${tabBtn('gesendet','Gesendet', 0)}
                     </div>
+                    ${liste.length > 0 ? `<div style="display:flex;justify-content:flex-end;margin-bottom:0.7rem;"><button onclick="deleteAlleNachrichten('${tab}')" style="border:none;background:none;color:#dc2626;font-weight:900;font-size:10px;text-transform:uppercase;cursor:pointer;font-family:Inter,sans-serif;">🗑 Alle ${tab === 'eingang' ? 'im Eingang' : 'gesendeten'} löschen (${liste.length})</button></div>` : ''}
                     ${inhalt}
                 </div>
             `;
@@ -1556,7 +1677,36 @@
             setTimeout(() => document.getElementById('compose-text')?.focus(), 100);
         };
 
-        window.replyNachricht = (von, origId) => { openCompose('', '', von); };
+        window.replyNachricht = (origId) => {
+            const o = allNachrichten.find(n => n.id === origId) || {};
+            const a = o.auftrag || {};
+            openCompose(a.id || '', a.adresse || '', o.von || '', a.datum || '');
+        };
+
+        // Löschen: blendet die Nachricht für MICH aus. Haben alle Beteiligten gelöscht → endgültig weg.
+        async function deleteNachrichtFor(n) {
+            const me = myId();
+            const geloescht = [...new Set([...(n.geloeschtVon || []), me].map(x => (x||'').toUpperCase()))];
+            const beteiligte = [...new Set([n.von, ...(n.an || [])].map(x => (x||'').toUpperCase()))].filter(x => x && x !== 'SYSTEM');
+            const ref = doc(db, 'artifacts', appId, 'public', 'data', 'nachrichten', n.id);
+            if (beteiligte.every(x => geloescht.includes(x))) await deleteDoc(ref);
+            else await updateDoc(ref, { geloeschtVon: geloescht });
+        }
+        window.deleteNachricht = async (id) => {
+            const n = allNachrichten.find(x => x.id === id); if (!n) return;
+            if (!confirm('Nachricht löschen?')) return;
+            try { await deleteNachrichtFor(n); showStatus('NACHRICHT GELÖSCHT', 'info'); }
+            catch(e) { console.error(e); showStatus('FEHLER BEIM LÖSCHEN', 'error'); }
+        };
+        window.deleteAlleNachrichten = async (tab) => {
+            const me = myId().toUpperCase();
+            const mine = allNachrichten.filter(n => !(n.geloeschtVon || []).some(x => (x||'').toUpperCase() === me))
+                .filter(n => tab === 'eingang' ? (n.an||[]).some(x => (x||'').toUpperCase() === me) : (n.von||'').toUpperCase() === me);
+            if (!mine.length || !confirm(`${mine.length} Nachricht(en) löschen?`)) return;
+            showStatus('LÖSCHE...', 'info');
+            try { for (const n of mine) await deleteNachrichtFor(n); showStatus(`${mine.length} NACHRICHTEN GELÖSCHT`, 'info'); }
+            catch(e) { console.error(e); showStatus('FEHLER BEIM LÖSCHEN', 'error'); }
+        };
         // "Teilen" — aus Kalender, Archiv oder Formular. Sucht Adresse/Datum selbst.
         window.teilenAuftrag = (projektId, event) => {
             if (event && event.preventDefault) { event.preventDefault(); event.stopPropagation(); }
@@ -1597,7 +1747,7 @@
 
         window.toggleAufgabeErledigt = async (id) => {
             try {
-                await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'nachrichten', id), { erledigt: true });
+                await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'nachrichten', id), { erledigt: true, erledigtVon: myId() });
                 showStatus("AUFGABE ALS ERLEDIGT MARKIERT", "success");
             } catch(e) { console.error(e); showStatus("FEHLER", "error"); }
         };
@@ -1978,6 +2128,15 @@
         // KALENDER RENDER — NUR Grid, Banners separat
         // ════════════════════════════════════════════════
 
+        function snapLine(s) {
+            if (s.erledigtTyp === 'teilweise') {
+                if (s.folgetermin) return '→ Folgetermin ' + fmtTermin(s.folgetermin);
+                if (s.bemerkung) return '💬 ' + s.bemerkung;
+            }
+            return '';
+        }
+        const snapIcon = (s) => s.erledigtTyp === 'teilweise' ? '◐ TEILWEISE · ' : '✅ ';
+
         function renderWorkWeek() {
             const container = document.getElementById('work-week-grid');
             const weekLabel = document.getElementById('week-label');
@@ -1990,7 +2149,10 @@
             const isMobile = window.innerWidth < 768;
             renderAusmesserFilterBar();
             // Nur was ICH sehen darf (Ausmesser = eigener Kalender, Admin = Haupt-/gefilterter Kalender)
-            const visProjects = allProjects.filter(projVisibleForMe);
+            // Ein Auftrag, der zu genau diesem Termin schon erledigt/teilweise gemeldet wurde,
+            // wird NICHT nochmals angezeigt – nur der grüne/orange Verlaufseintrag (sonst doppelt).
+            const doneKeys = new Set(allSnapshots.map(x => x.projektId + '|' + x.datum));
+            const visProjects = allProjects.filter(projVisibleForMe).filter(p => !doneKeys.has(p.id + '|' + p.datum));
             const visSnapshots = allSnapshots.filter(snapVisibleForMe);
 
             if (isMobile) {
@@ -2064,7 +2226,7 @@
                             const timeStr = timeParts.length > 1 ? timeParts[1].substring(0,5) : '';
                             const snapshotId = s.projektId + '__' + s.datum.replace(/[:.]/g, '-');
                             const entry = document.createElement('div');
-                            entry.className = "px-3 py-2.5 border-t border-green-100 flex items-center gap-2 bg-green-50";
+                            entry.className = "px-3 py-2.5 border-t border-green-100 flex items-center gap-2 bg-green-50" + (s.erledigtTyp === 'teilweise' ? ' snap-teilweise' : '');
                             entry.dataset.label = s.projektId;
                             entry.innerHTML = `
                                 <div class="w-2 h-2 rounded-full bg-green-500 flex-shrink-0"></div>
@@ -2074,7 +2236,8 @@
                                         <span style="background:#16a34a;color:white;font-size:9px;font-weight:900;padding:1px 6px;border-radius:999px;flex-shrink:0;">#${s.einsatzNr}</span>
                                     </div>
                                     <div class="text-[10px] font-bold truncate text-green-700">${s.adresse || '–'}</div>
-                                    <div class="text-[9px] font-black text-green-600 uppercase">✅ ${s.erledigtVon}${s.kunde ? ' · ' + s.kunde : ''}</div>
+                                    <div class="text-[9px] font-black text-green-600 uppercase">${snapIcon(s)}${s.erledigtVon}${s.kunde ? ' · ' + s.kunde : ''}</div>
+                                    ${snapLine(s) ? `<div class="text-[9px] font-bold text-green-700 truncate">${snapLine(s).replace(/</g,'&lt;')}</div>` : ''}
                                 </div>
                                 <div class="flex items-center gap-1.5 flex-shrink-0">
                                     <span class="text-[9px] font-black text-slate-400">${timeStr}</span>
@@ -2174,7 +2337,8 @@
                             const topPos = ((hNum - 7) * 80) + (mNum / 60 * 80) + 48;
                             const snapshotId = s.projektId + '__' + s.datum.replace(/[:.]/g, '-');
                             const entry = document.createElement('div');
-                            entry.className = "absolute left-1 right-1 bg-green-50 border-2 border-green-400 p-2 rounded-xl shadow-lg z-20 overflow-hidden flex flex-col justify-between hover:shadow-xl transition-all";
+                            entry.className = "absolute left-1 right-1 bg-green-50 border-2 border-green-400 p-2 rounded-xl shadow-lg z-20 overflow-hidden flex flex-col justify-between hover:shadow-xl transition-all" + (s.erledigtTyp === 'teilweise' ? ' snap-teilweise' : '');
+                            entry.title = (s.erledigtTyp === 'teilweise' ? 'Teilweise fertig' : 'Erledigt') + ' · ' + (s.erledigtVon||'') + (snapLine(s) ? '\n' + snapLine(s) : '');
                             entry.style.top = `${topPos}px`;
                             entry.style.minHeight = "76px";
                             entry.style.height = "auto";
@@ -2188,7 +2352,8 @@
                                     <span class="text-[8px] font-black text-slate-400 flex-shrink-0">${hours}:${minutes}</span>
                                 </div>
                                 <div class="text-[8px] font-bold text-green-700 truncate">${s.adresse || s.kunde || '–'}</div>
-                                <div class="text-[8px] font-black text-green-600 uppercase truncate">✅ ${s.erledigtVon}${s.kunde ? ' · ' + s.kunde : ''}</div>
+                                <div class="text-[8px] font-black text-green-600 uppercase truncate">${snapIcon(s)}${s.erledigtVon}${s.kunde ? ' · ' + s.kunde : ''}</div>
+                                ${snapLine(s) ? `<div class="text-[8px] font-bold text-green-700 truncate">${snapLine(s).replace(/</g,'&lt;')}</div>` : ''}
                                 <div class="flex items-center justify-between gap-1">
                                     <button onclick="teilenAuftrag('${s.projektId}', event)" title="Teilen / Nachricht"
                                         style="padding:2px 6px;border-radius:6px;border:none;cursor:pointer;font-size:10px;font-weight:900;background:#dcfce7;color:#16a34a;font-family:Inter,sans-serif;">📨</button>
@@ -2525,6 +2690,14 @@
         @keyframes badgePulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.15); } }
         .identity-pill { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; }
         #ausmesser-filter-bar { scrollbar-width: none; }
+        /* Teilweise fertig = orange statt grün */
+        .snap-teilweise { background: #fffbeb !important; border-color: #f59e0b !important; }
+        .snap-teilweise .text-green-700, .snap-teilweise .text-green-600 { color: #b45309 !important; }
+        .snap-teilweise .line-through { text-decoration: none !important; }
+        .snap-teilweise .bg-green-500 { background: #f59e0b !important; }
+        .snap-teilweise span[style*="#16a34a"] { background: #f59e0b !important; }
+        .snap-teilweise button { background: #fef3c7 !important; color: #b45309 !important; }
+        button[title="Teilen / Nachricht"] { font-size: 13px !important; filter: saturate(1.4); }
         /* Parallele Termine im Hauptkalender: kompakt darstellen */
         .lane-narrow { padding: 5px !important; }
         .lane-narrow .lane-hide, .lane-narrow span[style*="border-radius:999px"] { display: none !important; }
