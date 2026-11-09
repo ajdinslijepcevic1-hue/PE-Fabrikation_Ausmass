@@ -725,13 +725,23 @@
 
         window.deleteProject = async (id, event) => {
             if (event) { event.preventDefault(); event.stopPropagation(); }
-            const confirmed = confirm(`Projekt "${id}" löschen?`);
+            const snaps = allSnapshots.filter(s => s.projektId === id);
+            const confirmed = confirm(`Projekt "${id}" endgültig löschen?\n\nWird komplett entfernt: Auftrag, Pläne/Dateien` +
+                (snaps.length ? ` und ${snaps.length} Erledigt-Eintrag/Einträge im Kalender.` : ' und Kalender-Eintrag.'));
             if (!confirmed) return;
             showStatus("LÖSCHE PROJEKT...", "info");
             try {
-                await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'projekte', id));
-                showStatus(`PROJEKT "${id}" ENTFERNT`, "success");
-            } catch (e) { showStatus("FEHLER BEIM LÖSCHEN", "error"); }
+                // Erledigt-/Teilweise-Einträge im Kalender löschen (sonst bleibt der Auftrag im Kalender sichtbar)
+                const snapDocs = await getDocs(collection(db, 'artifacts', appId, 'public', 'data', 'kalender_snapshots'));
+                for (const d of snapDocs.docs) {
+                    if (d.data().projektId === id) await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'kalender_snapshots', d.id));
+                }
+                // Auftrag inkl. hochgeladener Dateien löschen
+                const p = allProjects.find(x => x.id === id);
+                await deleteProjectCompletely(id, p?.files || []);
+                if (loadedProjectId === id) loadedProjectId = null;
+                showStatus(`PROJEKT "${id}" KOMPLETT ENTFERNT`, "success");
+            } catch (e) { console.error(e); showStatus("FEHLER BEIM LÖSCHEN", "error"); }
         };
 
         window.markDone = async (snapshotId, event) => {
@@ -739,7 +749,10 @@
             const snap = allSnapshots.find(s => s.id === snapshotId);
             if (!snap) return;
             const typTxt = snap.erledigtTyp === 'teilweise' ? 'teilweise erledigt' : 'erledigt';
-            const undo = confirm(`Auftrag "${snap.projektId}" ${typTxt} von: ${snap.erledigtVon}\n\nErledigt-Markierung rückgängig machen?` +
+            const verwaist = !allProjects.some(p => p.id === snap.projektId);
+            const undo = verwaist
+                ? confirm(`Der Auftrag "${snap.projektId}" existiert nicht mehr (gelöscht).\n\nKalender-Eintrag endgültig löschen?`)
+                : confirm(`Auftrag "${snap.projektId}" ${typTxt} von: ${snap.erledigtVon}\n\nErledigt-Markierung rückgängig machen?` +
                 (snap.folgetermin ? `\n\n(Der Folgetermin ${fmtTermin(snap.folgetermin)} bleibt bestehen.)` : ''));
             if (!undo) return;
             try {
@@ -771,7 +784,7 @@
             overlay.id = 'done-modal-overlay';
             overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.75);backdrop-filter:blur(8px);z-index:9999;display:flex;align-items:center;justify-content:center;padding:1rem;';
             overlay.innerHTML = `
-                <div style="background:#fff;border-radius:1.5rem;padding:1.5rem;width:100%;max-width:440px;box-shadow:0 25px 60px rgba(0,0,0,0.3);max-height:92vh;overflow-y:auto;font-family:Inter,sans-serif;">
+                <div class="big-modal" style="background:#fff;border-radius:1.5rem;padding:1.75rem;width:100%;max-width:620px;box-shadow:0 25px 60px rgba(0,0,0,0.3);max-height:92vh;overflow-y:auto;font-family:Inter,sans-serif;box-sizing:border-box;">
                     <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:1.1rem;">
                         <div style="width:44px;height:44px;background:#16a34a;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:1.3rem;flex-shrink:0;">✅</div>
                         <div style="min-width:0;flex:1;">
@@ -1577,7 +1590,7 @@
                             <span style="margin-left:auto;font-size:9px;font-weight:800;color:#94a3b8;font-family:Inter,sans-serif;">${fmtMsgTime(n.createdAt)}</span>
                         </div>
                         ${auftragChip}
-                        <div style="font-size:13px;font-weight:600;color:#334155;white-space:pre-wrap;font-family:Inter,sans-serif;margin-bottom:8px;">${(n.text||'').replace(/</g,'&lt;')}</div>
+                        <div style="font-size:16px;line-height:1.45;font-weight:600;color:#1e293b;white-space:pre-wrap;font-family:Inter,sans-serif;margin:4px 0 12px;">${(n.text||'').replace(/</g,'&lt;')}</div>
                         <div style="display:flex;gap:7px;flex-wrap:wrap;">
                             ${tab === 'eingang' && n.von && n.von !== 'SYSTEM' ? `<button onclick="replyNachricht('${n.id}')" style="padding:6px 12px;border-radius:8px;border:none;background:#0f172a;color:#fff;font-weight:900;font-size:10px;text-transform:uppercase;cursor:pointer;font-family:Inter,sans-serif;">↩ Antworten</button>` : ''}
                             ${istAufgabe && !n.erledigt && tab === 'eingang' ? `<button onclick="toggleAufgabeErledigt('${n.id}')" style="padding:6px 12px;border-radius:8px;border:none;background:#16a34a;color:#fff;font-weight:900;font-size:10px;text-transform:uppercase;cursor:pointer;font-family:Inter,sans-serif;">✓ ${n.typ === 'rueckmeldung' ? 'Verarbeitet' : 'Aufgabe erledigt'}</button>` : ''}
@@ -1597,7 +1610,7 @@
             const unreadCount = eingang.filter(wasUnread).length;
 
             overlay.innerHTML = `
-                <div style="background:#fff;border-radius:1.5rem;padding:1.5rem;width:100%;max-width:560px;box-shadow:0 25px 60px rgba(0,0,0,0.3);max-height:90vh;overflow-y:auto;">
+                <div class="big-modal postfach-panel" style="background:#fff;border-radius:1.5rem;padding:1.75rem;width:100%;max-width:880px;box-shadow:0 25px 60px rgba(0,0,0,0.3);height:86vh;overflow-y:auto;box-sizing:border-box;">
                     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;">
                         <div style="display:flex;align-items:center;gap:0.75rem;">
                             <div style="width:44px;height:44px;background:#dbeafe;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:1.3rem;flex-shrink:0;">📨</div>
@@ -1649,7 +1662,7 @@
                 ? `<div style="display:inline-flex;align-items:center;gap:5px;background:#eff6ff;color:#1e40af;border:1px solid #bfdbfe;padding:4px 10px;border-radius:999px;font-size:11px;font-weight:900;margin-bottom:0.75rem;font-family:Inter,sans-serif;">📋 ${auftragId}${auftragAdresse ? ' · ' + auftragAdresse : ''}</div>` : '';
 
             overlay.innerHTML = `
-                <div style="background:#fff;border-radius:1.5rem;padding:1.5rem;width:100%;max-width:460px;box-shadow:0 25px 60px rgba(0,0,0,0.3);max-height:90vh;overflow-y:auto;">
+                <div class="big-modal" style="background:#fff;border-radius:1.5rem;padding:1.75rem;width:100%;max-width:680px;box-shadow:0 25px 60px rgba(0,0,0,0.3);max-height:90vh;overflow-y:auto;box-sizing:border-box;">
                     <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:1.1rem;">
                         <div style="width:44px;height:44px;background:#dbeafe;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:1.3rem;flex-shrink:0;">✍️</div>
                         <div style="font-weight:900;font-size:14px;text-transform:uppercase;color:#0f172a;font-family:Inter,sans-serif;">${auftragId ? 'Auftrag teilen' : 'Neue Nachricht'}</div>
@@ -1667,7 +1680,7 @@
                     <label style="display:flex;align-items:center;gap:8px;margin-bottom:0.9rem;cursor:pointer;font-family:Inter,sans-serif;font-weight:900;font-size:11px;text-transform:uppercase;color:#7c3aed;">
                         <input type="checkbox" id="compose-aufgabe" style="width:17px;height:17px;"> Als Aufgabe zuteilen
                     </label>
-                    <textarea id="compose-text" rows="4" placeholder="Text / Nachricht…"
+                    <textarea id="compose-text" rows="7" placeholder="Text / Nachricht…"
                         style="width:100%;border:2px solid #e2e8f0;border-radius:0.875rem;padding:0.875rem 1rem;font-size:16px;font-weight:600;outline:none;color:#0f172a;font-family:Inter,sans-serif;box-sizing:border-box;resize:vertical;margin-bottom:1rem;"
                         onfocus="this.style.borderColor='#2563eb'" onblur="this.style.borderColor='#e2e8f0'"></textarea>
                     <button onclick="sendNachricht()" style="width:100%;padding:0.9rem;border-radius:0.875rem;border:none;background:#2563eb;color:#fff;font-weight:900;font-size:12px;text-transform:uppercase;cursor:pointer;box-shadow:0 4px 15px rgba(37,99,235,0.35);font-family:Inter,sans-serif;">➤ Senden</button>
@@ -2690,6 +2703,17 @@
         @keyframes badgePulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.15); } }
         .identity-pill { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; }
         #ausmesser-filter-bar { scrollbar-width: none; }
+        /* ===== GROSSE FENSTER (Postfach, Nachricht, Erledigt) ===== */
+        @media (min-width: 768px) {
+            .big-modal { zoom: 1.15; }
+            .postfach-panel { height: 76vh !important; }
+            .postfach-panel > div[style*="border-left:4px"] { padding: 16px 18px !important; }
+        }
+        @media (max-width: 767px) {
+            #postfach-overlay, #compose-overlay, #done-modal-overlay { padding: 0 !important; }
+            .big-modal { max-width: none !important; width: 100% !important; height: 100% !important; max-height: 100% !important;
+                border-radius: 0 !important; padding: calc(1.25rem + env(safe-area-inset-top)) 1.1rem calc(1.25rem + env(safe-area-inset-bottom)) !important; }
+        }
         /* Teilweise fertig = orange statt grün */
         .snap-teilweise { background: #fffbeb !important; border-color: #f59e0b !important; }
         .snap-teilweise .text-green-700, .snap-teilweise .text-green-600 { color: #b45309 !important; }
